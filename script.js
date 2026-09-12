@@ -22,9 +22,13 @@
    * ========================================================================== */
 
   const CONFIG = {
-    /** รหัสผ่านสาธิต — เป็นการล็อกฝั่ง client เท่านั้น ไม่ใช่ระบบยืนยันตัวตนที่ปลอดภัย */
-    adminPassword: 'admin1234',
     sheetId: '1YV97JIiatp0amltwvIQUs2zPnOYhe6xWhz0fh3fNjNY',
+    /**
+     * Web App URL ของ Apps Script ที่ติดตั้ง Code.gs ไว้
+     * ใช้เป็นค่าเริ่มต้นเมื่อยังไม่เคยตั้งค่าในเครื่องนี้ — แก้ทับได้ที่หน้าตั้งค่า
+     * URL นี้ไม่ใช่ความลับ เพราะทุกคำขอยังต้องผ่านการล็อกอิน Google และตรวจสิทธิ์ฝั่งเซิร์ฟเวอร์
+     */
+    defaultBackendUrl: 'https://script.google.com/macros/s/AKfycbx13bzgTATvVjoZh0inCwYfAuM4UBoYVjASi3LPel6kvwQ60l0w3LBlHCkapZK2ayD03A/exec',
     productSheetNames: ['Products', 'สินค้า', 'คลังสินค้า'],
     customerSheetNames: ['Customers', 'ลูกค้า', 'รายชื่อลูกค้า'],
     requestTimeoutMs: 15000,
@@ -900,8 +904,14 @@
     storageAvailable: false,
     lastConsultation: null,
     /** mode: 'local' | 'sheet' | 'api' — ต้องตรงกับตัวเลือกในหน้าตั้งค่า */
-    backend: { mode: 'local', url: '', token: '' }
+    backend: { mode: 'local', url: '', token: '' },
+    /** เซสชันที่ได้จากการล็อกอิน Google — token เก็บใน sessionStorage ไม่ใช่ localStorage */
+    session: { token: '', user: null, permissions: [] }
   };
+
+  /** ตรวจสิทธิ์ฝั่งหน้าเว็บเพื่อซ่อนปุ่มเท่านั้น — ด่านจริงอยู่ที่เซิร์ฟเวอร์ */
+  const can = (action) =>
+    state.backend.mode !== 'api' || state.session.permissions.includes(action);
 
   function detectStorage() {
     try {
@@ -965,9 +975,18 @@
     Object.assign(els, {
       appShell: $('#app-shell'),
       loginScreen: $('#login-screen'),
-      loginForm: $('#login-form'),
-      loginPassword: $('#admin-password'),
       loginError: $('#login-error'),
+      loginChecking: $('#login-checking'),
+      loginGoogle: $('#login-google'),
+      loginSetup: $('#login-setup'),
+      loginSetupDetail: $('#login-setup-detail'),
+      googleButton: $('#google-signin-button'),
+      sessionName: $('#session-name'),
+      sessionRole: $('#session-role'),
+      sessionAvatar: $('#session-avatar'),
+      manageUsersBtn: $('#btn-manage-users'),
+      usersList: $('#users-list'),
+      userForm: $('#user-form'),
 
       dbStatusText: $('#db-status-text'),
       dbStatusDot: $('#db-status-indicator'),
@@ -1196,7 +1215,13 @@
   }
 
   /* ==========================================================================
-   * 8. AUTHENTICATION (การล็อกหน้าจอฝั่ง client เพื่อการสาธิต)
+   * 8. AUTHENTICATION — ล็อกอินด้วยบัญชี Google จริง
+   *
+   * หน้าเว็บไม่ได้ตัดสินสิทธิ์เอง หน้าที่ของมันคือ
+   *   1) ขอ ID token จาก Google Identity Services
+   *   2) ส่งให้เซิร์ฟเวอร์ตรวจและแลกเป็น session token
+   *   3) แนบ session token ไปกับทุกคำขอ
+   * การตรวจสิทธิ์จริงเกิดที่ Code.gs ทุกครั้ง การซ่อนปุ่มเป็นเพียงเรื่องประสบการณ์ใช้งาน
    * ========================================================================== */
 
   function setLocked(locked) {
@@ -1204,48 +1229,196 @@
     if (locked) {
       loginScreen.classList.remove('hidden', 'opacity-0');
       if (appShell) appShell.setAttribute('inert', '');
-      window.setTimeout(() => els.loginPassword && els.loginPassword.focus(), 50);
     } else {
       loginScreen.classList.add('opacity-0');
       if (appShell) appShell.removeAttribute('inert');
       window.setTimeout(() => loginScreen.classList.add('hidden'), 300);
     }
+  }
+
+  function showLoginPanel(name) {
+    ['checking', 'google', 'setup'].forEach((key) => {
+      els[`login${key.charAt(0).toUpperCase()}${key.slice(1)}`].classList.toggle('hidden', key !== name);
+    });
+  }
+
+  function showLoginError(message) {
+    els.loginError.textContent = message;
+    els.loginError.classList.toggle('hidden', !message);
+  }
+
+  function saveSession(session) {
+    state.session = {
+      token: session.sessionToken,
+      user: session.user,
+      permissions: session.permissions || []
+    };
     try {
-      sessionStorage.setItem(CONFIG.sessionKey, locked ? '0' : '1');
+      sessionStorage.setItem(CONFIG.sessionKey, JSON.stringify(state.session));
     } catch (error) {
-      /* sessionStorage อาจถูกปิดใช้งาน — ไม่กระทบการทำงานหลัก */
+      /* sessionStorage อาจถูกปิด — เซสชันจะอยู่แค่ในหน่วยความจำ */
     }
   }
 
-  function handleLogin(event) {
-    event.preventDefault();
-    const value = els.loginPassword.value;
-    if (value === CONFIG.adminPassword) {
-      els.loginError.classList.add('hidden');
-      els.loginPassword.classList.remove('field-invalid');
-      els.loginPassword.value = '';
-      setLocked(false);
-      showToast('เข้าสู่ระบบเรียบร้อยแล้ว');
+  function restoreSession() {
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(CONFIG.sessionKey) || 'null');
+      if (stored && stored.token && stored.user) {
+        state.session = stored;
+        return true;
+      }
+    } catch (error) {
+      /* ไม่มีเซสชันเดิม */
+    }
+    return false;
+  }
+
+  function clearSession() {
+    state.session = { token: '', user: null, permissions: [] };
+    try { sessionStorage.removeItem(CONFIG.sessionKey); } catch (error) { /* ไม่สำคัญ */ }
+  }
+
+  /** แสดงชื่อและบทบาทผู้ใช้บนแถบหัว พร้อมซ่อนปุ่มที่ไม่มีสิทธิ์ */
+  function renderSession() {
+    const user = state.session.user;
+    const roleLabels = {
+      owner: 'เจ้าของร้าน', admin: 'ผู้ดูแลระบบ', optometrist: 'ทัศนมาตร',
+      staff: 'พนักงานขาย', viewer: 'ผู้ชมข้อมูล'
+    };
+
+    if (user) {
+      els.sessionName.textContent = user.displayName || user.email;
+      els.sessionRole.textContent = `${roleLabels[user.role] || user.role} · ${user.email}`;
+      els.sessionAvatar.innerHTML = user.picture
+        ? html`<img src="${user.picture}" alt="" class="h-full w-full object-cover" referrerpolicy="no-referrer">`
+        : html`${(user.displayName || user.email).trim().charAt(0).toUpperCase()}`;
     } else {
-      els.loginError.classList.remove('hidden');
-      els.loginPassword.classList.add('field-invalid');
-      els.loginPassword.value = '';
-      els.loginPassword.focus();
+      els.sessionName.textContent = state.backend.mode === 'api' ? '—' : 'โหมดออฟไลน์';
+      els.sessionRole.textContent = state.backend.mode === 'api' ? 'ยังไม่ได้เข้าสู่ระบบ' : 'ข้อมูลเก็บในเครื่อง';
+      els.sessionAvatar.innerHTML = html`<i class="fa-solid fa-user"></i>`;
+    }
+
+    els.manageUsersBtn.classList.toggle('hidden', !can('listUsers'));
+    els.manageUsersBtn.classList.toggle('flex', can('listUsers'));
+
+    // ซ่อนปุ่มที่บทบาทนี้ใช้ไม่ได้ (เซิร์ฟเวอร์ยังปฏิเสธซ้ำอีกชั้นเสมอ)
+    const guarded = [
+      ['new-customer', 'saveCustomer'], ['quick-new-customer', 'saveCustomer'],
+      ['new-product', 'saveProduct'], ['new-order', 'createOrder'], ['quick-new-order', 'createOrder'],
+      ['backend-push', 'saveCustomer'], ['backend-diagnose', 'diagnose'], ['reset-data', 'bootstrap']
+    ];
+    guarded.forEach(([action, permission]) => {
+      $$(`[data-action="${action}"]`).forEach((button) => {
+        button.classList.toggle('hidden', !can(permission));
+      });
+    });
+  }
+
+  /** ตรวจว่าเซิร์ฟเวอร์พร้อมให้ล็อกอินหรือยัง แล้วแสดงหน้าจอที่เหมาะสม */
+  async function initAuth() {
+    if (state.backend.mode !== 'api') {
+      // โหมดออฟไลน์/อ่านอย่างเดียว ไม่มีเซิร์ฟเวอร์ให้ยืนยันตัวตน
+      setLocked(false);
+      renderSession();
+      return;
+    }
+
+    showLoginPanel('checking');
+    setLocked(true);
+
+    // มีเซสชันเดิมอยู่แล้ว — ตรวจกับเซิร์ฟเวอร์ว่ายังใช้ได้
+    if (restoreSession()) {
+      try {
+        const me = await apiCall('me');
+        state.session.user = { ...state.session.user, ...me.user };
+        state.session.permissions = me.permissions;
+        saveSession({ sessionToken: state.session.token, user: state.session.user, permissions: me.permissions });
+        setLocked(false);
+        renderSession();
+        await backendPull();
+        return;
+      } catch (error) {
+        clearSession();
+      }
+    }
+
+    try {
+      const status = await apiCall('authStatus');
+      if (!status.ready) {
+        els.loginSetupDetail.textContent =
+          'เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า Google Client ID — เปิดสเปรดชีตแล้วใช้เมนู OptiCare › ตั้งค่า Google Client ID ก่อน';
+        showLoginPanel('setup');
+        return;
+      }
+      showLoginPanel('google');
+      showLoginError(status.firstRun
+        ? '' : '');
+      if (status.firstRun) {
+        els.loginError.classList.remove('hidden');
+        els.loginError.className = 'text-blue-800 text-xs font-medium bg-blue-50 border border-blue-200 rounded-lg p-3 leading-relaxed';
+        els.loginError.textContent = 'ยังไม่มีผู้ใช้ในระบบ — บัญชี Google แรกที่ล็อกอินจะถูกตั้งเป็นเจ้าของร้าน (owner) อัตโนมัติ';
+      }
+      renderGoogleButton(status.clientId);
+    } catch (error) {
+      els.loginSetupDetail.textContent = `เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ: ${error.message}`;
+      showLoginPanel('setup');
+    }
+  }
+
+  /** สร้างปุ่ม Sign in with Google */
+  function renderGoogleButton(clientId) {
+    if (!window.google || !google.accounts || !google.accounts.id) {
+      // สคริปต์ GIS ยังโหลดไม่เสร็จ หรือโหลดไม่ได้ (เช่นเปิดจาก file://)
+      showLoginError('โหลดระบบล็อกอินของ Google ไม่สำเร็จ — ต้องเปิดหน้าเว็บผ่าน https และตั้งค่า Authorized JavaScript origins ให้ตรงกับโดเมนนี้');
+      return;
+    }
+
+    google.accounts.id.initialize({
+      client_id: clientId,
+      callback: handleGoogleCredential,
+      auto_select: false,
+      cancel_on_tap_outside: true
+    });
+    google.accounts.id.renderButton(els.googleButton, {
+      theme: 'outline', size: 'large', text: 'signin_with',
+      shape: 'pill', locale: 'th', width: 280
+    });
+  }
+
+  /** Google ส่ง ID token กลับมา — แลกเป็น session token กับเซิร์ฟเวอร์ */
+  async function handleGoogleCredential(response) {
+    showLoginPanel('checking');
+    try {
+      const session = await apiCall('login', { idToken: response.credential }, 'POST');
+      saveSession(session);
+      setLocked(false);
+      renderSession();
+      showToast(`ยินดีต้อนรับ ${session.user.displayName || session.user.email}`);
+      await backendPull();
+    } catch (error) {
+      showLoginPanel('google');
+      els.loginError.className = 'text-rose-600 text-xs font-medium bg-rose-50 border border-rose-200 rounded-lg p-3 leading-relaxed';
+      showLoginError(error.message);
     }
   }
 
   async function handleLogout() {
     const ok = await askConfirm({
       title: 'ออกจากระบบ',
-      message: 'ต้องการออกจากระบบใช่หรือไม่? ข้อมูลที่บันทึกไว้ในเครื่องจะยังคงอยู่',
+      message: state.backend.mode === 'api'
+        ? 'ต้องการออกจากระบบใช่หรือไม่? ข้อมูลบน Google Sheets จะยังอยู่ครบ'
+        : 'ต้องการล็อกหน้าจอใช่หรือไม่? ข้อมูลที่บันทึกไว้ในเครื่องจะยังคงอยู่',
       confirmLabel: 'ออกจากระบบ'
     });
     if (!ok) return;
-    els.loginPassword.value = '';
-    els.loginError.classList.add('hidden');
-    els.loginPassword.classList.remove('field-invalid');
-    setLocked(true);
+
+    clearSession();
+    if (window.google && google.accounts && google.accounts.id) {
+      google.accounts.id.disableAutoSelect();
+    }
+    renderSession();
     showToast('ออกจากระบบเรียบร้อยแล้ว', 'info');
+    await initAuth();
   }
 
   /* ==========================================================================
@@ -3264,20 +3437,24 @@
    * เป็นออบเจกต์ซ้อนกัน จึงต้องมีตัวแปลงสองทางในส่วนนี้ที่เดียว
    * ------------------------------------------------------------------------ */
 
+  /** พร้อมเขียนขึ้นเซิร์ฟเวอร์เมื่ออยู่โหมด API ตั้ง URL แล้ว และล็อกอินผ่านแล้วเท่านั้น */
   const backendConfigured = () =>
-    state.backend.mode === 'api' && Boolean(state.backend.url) && Boolean(state.backend.token);
+    state.backend.mode === 'api' && Boolean(state.backend.url) && Boolean(state.session.token);
 
   function loadBackendSettings() {
+    // ยังไม่เคยตั้งค่าในเครื่องนี้ → ใช้ Web App ที่กำหนดไว้ใน CONFIG เป็นค่าเริ่มต้น
+    state.backend.url = CONFIG.defaultBackendUrl || '';
+    state.backend.mode = state.backend.url ? 'api' : 'local';
+
     if (!state.storageAvailable) return;
     try {
-      const stored = JSON.parse(localStorage.getItem(CONFIG.backendKey) || '{}');
+      const stored = JSON.parse(localStorage.getItem(CONFIG.backendKey) || 'null');
       if (stored && typeof stored === 'object') {
-        const mode = String(stored.mode || 'local');
-        state.backend.mode = ['local', 'sheet', 'api'].includes(mode) ? mode : 'local';
-        state.backend.url = String(stored.url || '').trim();
-        state.backend.token = String(stored.token || '').trim();
-        if (state.backend.mode === 'api' && !backendConfigured()) state.backend.mode = 'local';
+        const mode = String(stored.mode || '');
+        if (['local', 'sheet', 'api'].includes(mode)) state.backend.mode = mode;
+        if (stored.url !== undefined) state.backend.url = String(stored.url || '').trim();
       }
+      if (state.backend.mode === 'api' && !state.backend.url) state.backend.mode = 'local';
     } catch (error) {
       console.warn('อ่านการตั้งค่าการเชื่อมต่อไม่สำเร็จ', error);
     }
@@ -3298,8 +3475,14 @@
    * (Apps Script ไม่ตอบ preflight ถ้าใช้ application/json เบราว์เซอร์จะบล็อกทันที)
    */
   async function apiCall(action, params = {}, method = 'GET') {
-    const { url, token } = state.backend;
-    if (!url || !token) throw new Error('ยังไม่ได้ตั้งค่า Web App URL และ API Token');
+    const url = state.backend.url;
+    if (!url) throw new Error('ยังไม่ได้ตั้งค่า Web App URL');
+
+    // action สาธารณะไม่ต้องมี session token · นอกนั้นต้องล็อกอินก่อน
+    const token = state.session.token || '';
+    if (!token && !['authStatus', 'login'].includes(action)) {
+      throw new Error('ยังไม่ได้เข้าสู่ระบบ');
+    }
 
     let response;
     if (method === 'GET') {
@@ -3327,7 +3510,17 @@
       // ปกติเกิดเมื่อ Apps Script ส่งหน้า HTML แจ้งให้ล็อกอินหรือรายงาน error กลับมา
       throw new Error('เซิร์ฟเวอร์ไม่ได้ตอบเป็น JSON — ตรวจว่า Deploy เป็น Web app และตั้ง Who has access ถูกต้อง');
     }
-    if (!payload.ok) throw new Error(payload.error || 'เซิร์ฟเวอร์ปฏิเสธคำขอ');
+    if (!payload.ok) {
+      // เซสชันหมดอายุหรือถูกเพิกถอน — บังคับล็อกอินใหม่ทันที
+      if (payload.needsLogin && state.session.token) {
+        clearSession();
+        renderSession();
+        setLocked(true);
+        showLoginPanel('checking');
+        initAuth();
+      }
+      throw new Error(payload.error || 'เซิร์ฟเวอร์ปฏิเสธคำขอ');
+    }
     return payload.data;
   }
 
@@ -3610,6 +3803,116 @@
     }
   }
 
+  /* ---------- จัดการผู้ใช้ระบบ ---------- */
+
+  const ROLE_LABEL = {
+    owner: 'เจ้าของร้าน', admin: 'ผู้ดูแลระบบ', optometrist: 'ทัศนมาตร',
+    staff: 'พนักงานขาย', viewer: 'ผู้ชมข้อมูล'
+  };
+  const ROLE_STYLE = {
+    owner: 'bg-purple-100 text-purple-800', admin: 'bg-blue-100 text-blue-800',
+    optometrist: 'bg-emerald-100 text-emerald-800', staff: 'bg-amber-100 text-amber-800',
+    viewer: 'bg-gray-100 text-gray-600'
+  };
+
+  async function openUsersModal() {
+    els.userForm.reset();
+    $('#user-id').value = '';
+    els.usersList.innerHTML = html`<p class="text-xs text-gray-400 py-4 text-center">กำลังโหลดรายชื่อผู้ใช้…</p>`;
+    openModal($('#modal-users'));
+
+    try {
+      const users = await apiCall('listUsers');
+      renderUsersList(users);
+    } catch (error) {
+      els.usersList.innerHTML = html`
+        <p class="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">${error.message}</p>`;
+    }
+  }
+
+  function renderUsersList(users) {
+    const me = state.session.user ? state.session.user.email : '';
+    if (!users.length) {
+      els.usersList.innerHTML = html`<p class="text-xs text-gray-400 py-4 text-center">ยังไม่มีผู้ใช้ในระบบ</p>`;
+      return;
+    }
+
+    els.usersList.innerHTML = users.map((user) => html`
+      <div class="flex items-center justify-between gap-2 border rounded-lg px-3 py-2 ${raw(user.active === false ? 'opacity-60 bg-gray-50' : '')}">
+        <div class="min-w-0">
+          <p class="text-xs font-semibold text-gray-800 truncate">
+            ${user.displayName || user.email}
+            ${user.email === me ? raw('<span class="text-2xs text-blue-600 font-normal">(คุณ)</span>') : ''}
+          </p>
+          <p class="text-2xs text-gray-500 truncate">${user.email}</p>
+          ${user.lastLoginAt
+            ? raw(html`<p class="text-2xs text-gray-400">เข้าใช้ล่าสุด ${String(user.lastLoginAt).replace('T', ' ').slice(0, 16)}</p>`)
+            : raw('<p class="text-2xs text-gray-400">ยังไม่เคยเข้าใช้งาน</p>')}
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <span class="px-2 py-0.5 rounded text-2xs font-semibold ${raw(ROLE_STYLE[user.role] || 'bg-gray-100 text-gray-600')}">
+            ${ROLE_LABEL[user.role] || user.role}
+          </span>
+          ${user.active === false
+            ? raw(html`<span class="px-2 py-0.5 rounded text-2xs font-semibold bg-rose-100 text-rose-700">ปิดใช้งาน</span>`)
+            : ''}
+          ${can('saveUser') && user.email !== me
+            ? raw(html`
+                <button type="button" data-action="edit-user" data-id="${user.id}" data-email="${user.email}"
+                        data-role="${user.role}" data-note="${user.note || ''}"
+                        class="p-1.5 text-blue-600 hover:bg-blue-50 rounded" aria-label="แก้ไข ${user.email}">
+                  <i class="fa-solid fa-pen text-2xs" aria-hidden="true"></i>
+                </button>
+                <button type="button" data-action="disable-user" data-id="${user.id}" data-email="${user.email}"
+                        class="p-1.5 text-rose-600 hover:bg-rose-50 rounded" aria-label="ปิดใช้งาน ${user.email}">
+                  <i class="fa-solid fa-ban text-2xs" aria-hidden="true"></i>
+                </button>`)
+            : ''}
+        </div>
+      </div>`).join('');
+  }
+
+  async function saveUser(event) {
+    event.preventDefault();
+    if (!els.userForm.reportValidity()) return;
+
+    const record = {
+      id: $('#user-id').value || undefined,
+      email: $('#user-email').value.trim().toLowerCase(),
+      role: $('#user-role').value,
+      note: $('#user-note').value.trim(),
+      active: true
+    };
+
+    try {
+      await apiCall('saveUser', { record }, 'POST');
+      showToast(`บันทึกสิทธิ์ของ ${record.email} เรียบร้อย`);
+      els.userForm.reset();
+      $('#user-id').value = '';
+      renderUsersList(await apiCall('listUsers'));
+    } catch (error) {
+      showToast(`บันทึกไม่สำเร็จ: ${error.message}`, 'error');
+    }
+  }
+
+  async function disableUser(id, email) {
+    const ok = await askConfirm({
+      title: 'ปิดใช้งานบัญชี',
+      message: `ปิดใช้งาน ${email} ใช่หรือไม่? ผู้ใช้จะเข้าระบบไม่ได้ทันที แต่ประวัติการทำงานยังอยู่ครบ`,
+      confirmLabel: 'ปิดใช้งาน',
+      danger: true
+    });
+    if (!ok) return;
+
+    try {
+      await apiCall('deleteUser', { id }, 'POST');
+      showToast(`ปิดใช้งาน ${email} แล้ว`, 'info');
+      renderUsersList(await apiCall('listUsers'));
+    } catch (error) {
+      showToast(`ทำรายการไม่สำเร็จ: ${error.message}`, 'error');
+    }
+  }
+
   /* ---------- หน้าตั้งค่าการเชื่อมต่อ ---------- */
 
   function updateBackendUi() {
@@ -3641,8 +3944,7 @@
     $$('input[name="backend-mode"]').forEach((input) => {
       input.checked = input.value === state.backend.mode;
     });
-    $('#backend-url').value = state.backend.url;
-    $('#backend-token').value = state.backend.token;
+    $('#backend-url').value = state.backend.url || CONFIG.defaultBackendUrl || '';
     toggleBackendFields();
     openModal($('#modal-backend'));
   }
@@ -3652,16 +3954,15 @@
     els.backendApiFields.classList.toggle('hidden', !selected || selected.value !== 'api');
   }
 
-  function saveBackendSettings(event) {
+  async function saveBackendSettings(event) {
     event.preventDefault();
     const selected = $('input[name="backend-mode"]:checked');
     const mode = selected ? selected.value : 'local';
     const url = $('#backend-url').value.trim();
-    const token = $('#backend-token').value.trim();
 
     if (mode === 'api') {
-      if (!url || !token) {
-        showToast('โหมด Apps Script API ต้องระบุทั้ง Web App URL และ API Token', 'error');
+      if (!url) {
+        showToast('โหมด Apps Script API ต้องระบุ Web App URL', 'error');
         return;
       }
       if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) {
@@ -3670,28 +3971,42 @@
       }
     }
 
-    state.backend = { mode, url, token };
+    const changed = mode !== state.backend.mode || url !== state.backend.url;
+    state.backend = { mode, url, token: '' };
     persistBackendSettings();
     updateBackendUi();
     closeModal($('#modal-backend'));
     showToast(`เปลี่ยนโหมดเป็น "${{ local: 'ข้อมูลในเครื่อง', sheet: 'Google Sheets (อ่านอย่างเดียว)', api: 'Apps Script API' }[mode]}" แล้ว`);
+
+    // เปลี่ยนปลายทางแล้วต้องยืนยันตัวตนใหม่กับเซิร์ฟเวอร์นั้น
+    if (changed) {
+      clearSession();
+      renderSession();
+      await initAuth();
+    }
   }
 
+  /** ทดสอบว่า Web App ตอบสนองและตั้งค่าระบบล็อกอินไว้แล้วหรือยัง (ยังไม่ต้องล็อกอิน) */
   async function testBackendConnection() {
     const url = $('#backend-url').value.trim();
-    const token = $('#backend-token').value.trim();
-    if (!url || !token) {
-      showToast('กรุณากรอก Web App URL และ API Token ก่อนทดสอบ', 'error');
+    if (!url) {
+      showToast('กรุณากรอก Web App URL ก่อนทดสอบ', 'error');
       return;
     }
 
     const previous = { ...state.backend };
-    state.backend = { mode: 'api', url, token };
+    state.backend = { ...state.backend, mode: 'api', url };
     showToast('กำลังทดสอบการเชื่อมต่อ…', 'info');
 
     try {
-      const info = await apiCall('ping');
-      showToast(`เชื่อมต่อสำเร็จ — ${info.service} (${info.timezone}) · กดบันทึกเพื่อใช้งาน`);
+      const status = await apiCall('authStatus');
+      if (!status.ready) {
+        showToast('เชื่อมต่อเซิร์ฟเวอร์ได้ แต่ยังไม่ได้ตั้งค่า Google Client ID — ใช้เมนู OptiCare › ตั้งค่า Google Client ID ในสเปรดชีต', 'error');
+        return;
+      }
+      showToast(status.firstRun
+        ? 'เชื่อมต่อสำเร็จ — ยังไม่มีผู้ใช้ในระบบ บัญชี Google แรกที่ล็อกอินจะเป็นเจ้าของร้าน'
+        : `เชื่อมต่อสำเร็จ — มีผู้ใช้ในระบบ ${status.userCount} คน · กดบันทึกเพื่อใช้งาน`);
     } catch (error) {
       state.backend = previous;
       showToast(`เชื่อมต่อไม่สำเร็จ: ${error.message}`, 'error');
@@ -4111,6 +4426,28 @@
     'reset-data': () => resetData(),
 
     'open-backend-settings': () => openBackendSettings(),
+    'open-backend-settings-from-login': () => {
+      if (els.appShell) els.appShell.removeAttribute('inert');
+      openBackendSettings();
+    },
+    'use-offline-mode': () => {
+      state.backend.mode = 'local';
+      persistBackendSettings();
+      updateBackendUi();
+      clearSession();
+      renderSession();
+      setLocked(false);
+      showToast('เข้าสู่โหมดออฟไลน์ — ข้อมูลเก็บในเครื่องนี้เท่านั้น', 'info');
+    },
+    'open-users': () => openUsersModal(),
+    'edit-user': (el) => {
+      $('#user-id').value = el.dataset.id;
+      $('#user-email').value = el.dataset.email;
+      $('#user-role').value = el.dataset.role;
+      $('#user-note').value = el.dataset.note || '';
+      $('#user-email').focus();
+    },
+    'disable-user': (el) => disableUser(el.dataset.id, el.dataset.email),
     'backend-test': () => testBackendConnection(),
     'backend-pull': () => backendPull(),
     'backend-push': () => backendPush(),
@@ -4200,7 +4537,7 @@
     });
 
     // ฟอร์มต่าง ๆ
-    els.loginForm.addEventListener('submit', handleLogin);
+    els.userForm.addEventListener('submit', saveUser);
     els.customerForm.addEventListener('submit', saveCustomer);
     els.productForm.addEventListener('submit', saveProduct);
     els.orderForm.addEventListener('submit', saveOrder);
@@ -4288,14 +4625,23 @@
 
     switchTab(location.hash.slice(1) || 'dashboard', { focusPanel: false });
     renderAll();
+    renderSession();
 
-    let unlocked = false;
-    try {
-      unlocked = sessionStorage.getItem(CONFIG.sessionKey) === '1';
-    } catch (error) {
-      /* sessionStorage ไม่พร้อมใช้งาน — ให้ล็อกหน้าจอตามปกติ */
+    // รอให้สคริปต์ Google Identity Services โหลดเสร็จก่อนค่อยสร้างปุ่มล็อกอิน
+    if (state.backend.mode === 'api' && !window.google) {
+      setLocked(true);
+      showLoginPanel('checking');
+      let waited = 0;
+      const timer = setInterval(() => {
+        waited += 200;
+        if (window.google || waited >= 4000) {
+          clearInterval(timer);
+          initAuth();
+        }
+      }, 200);
+    } else {
+      initAuth();
     }
-    setLocked(!unlocked);
   }
 
   if (document.readyState === 'loading') {
