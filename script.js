@@ -35,6 +35,7 @@
     storageKey: 'opticare:data:v2',
     backendKey: 'opticare:backend:v1',
     sessionKey: 'opticare:session:v1',
+    lockKey: 'opticare:locked:v1',
     toastMs: 3200
   };
 
@@ -158,6 +159,12 @@
 
   const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
+  /** ปัดทศนิยม 2 ตำแหน่งแบบครึ่งหนึ่งขึ้นออกจากศูนย์ ให้ตรงกับที่ Code.gs ใช้ */
+  const round2 = (value) => {
+    const n = toNum(value, 0);
+    return Math.sign(n) * Math.round(Math.abs(n) * 100) / 100;
+  };
+
   const bahtFormatter = new Intl.NumberFormat('th-TH', {
     style: 'currency',
     currency: 'THB',
@@ -275,6 +282,165 @@
   /** ความต่างของกำลังสายตาสองข้าง (Anisometropia) วัดจาก Spherical Equivalent */
   const anisometropia = (odSph, odCyl, osSph, osCyl) =>
     Math.abs(sphericalEquivalent(odSph, odCyl) - sphericalEquivalent(osSph, osCyl));
+
+  /**
+   * จำแนกชนิดสายตาเอียงตามตำแหน่งของโฟกัสทั้งสองเส้นเทียบกับจอประสาทตา
+   * ใช้หลักการมาตรฐาน: ดูกำลังในแกนหลัก 2 แกน คือ SPH และ SPH + CYL
+   *
+   *   ทั้งสองแกนติดลบ      → Compound myopic astigmatism
+   *   แกนหนึ่งเป็นศูนย์     → Simple myopic / Simple hyperopic astigmatism
+   *   คนละเครื่องหมาย      → Mixed astigmatism
+   *   ทั้งสองแกนเป็นบวก    → Compound hyperopic astigmatism
+   */
+  function astigmatismClass(sph, cyl) {
+    const c = toNum(cyl, 0);
+    if (!c) return null;
+
+    const m1 = toNum(sph, 0);              // กำลังในแกนที่ระบุด้วย AXIS
+    const m2 = round2(m1 + c);             // กำลังในแกนตั้งฉาก
+    const sign = (value) => (value > 0.001 ? 1 : value < -0.001 ? -1 : 0);
+    const s1 = sign(m1);
+    const s2 = sign(m2);
+
+    if (s1 === 0 || s2 === 0) {
+      const other = s1 === 0 ? s2 : s1;
+      return other < 0
+        ? { code: 'SMA', label: 'Simple myopic astigmatism', thai: 'สายตาเอียงชนิดสั้นอย่างเดียว' }
+        : { code: 'SHA', label: 'Simple hyperopic astigmatism', thai: 'สายตาเอียงชนิดยาวอย่างเดียว' };
+    }
+    if (s1 < 0 && s2 < 0) {
+      return { code: 'CMA', label: 'Compound myopic astigmatism', thai: 'สายตาเอียงร่วมกับสายตาสั้นทั้งสองแกน' };
+    }
+    if (s1 > 0 && s2 > 0) {
+      return { code: 'CHA', label: 'Compound hyperopic astigmatism', thai: 'สายตาเอียงร่วมกับสายตายาวทั้งสองแกน' };
+    }
+    return { code: 'MA', label: 'Mixed astigmatism', thai: 'สายตาเอียงชนิดผสม (แกนหนึ่งสั้น อีกแกนยาว)' };
+  }
+
+  /**
+   * กำลังเพ่งที่คาดหมายตามอายุ — สูตรของ Hofstetter (1950)
+   *   ต่ำสุด (min)   = 15 − 0.25 × อายุ
+   *   เฉลี่ย (avg)   = 18.5 − 0.30 × อายุ
+   *   สูงสุด (max)   = 25 − 0.40 × อายุ
+   * ใช้เทียบว่า ADD ที่ให้ไปสมเหตุสมผลกับอายุหรือไม่
+   */
+  function hofstetterAmplitude(age) {
+    const a = toNum(age, 0);
+    if (!a) return null;
+    return {
+      min: Math.max(round2(15 - 0.25 * a), 0),
+      avg: Math.max(round2(18.5 - 0.30 * a), 0),
+      max: Math.max(round2(25 - 0.40 * a), 0)
+    };
+  }
+
+  /**
+   * ADD ที่เหมาะสมตามหลัก "สงวนกำลังเพ่งไว้ครึ่งหนึ่ง" (half-amplitude reserve)
+   *   ADD = ความต้องการที่ระยะทำงาน − (กำลังเพ่งที่มี ÷ 2)
+   * เช่น ระยะอ่าน 40 ซม. ต้องใช้ 2.50 D ถ้ามีกำลังเพ่งเหลือ 2.00 D
+   * จะสงวนไว้ใช้ 1.00 D จึงได้ ADD = 1.50 D
+   *
+   * @param {number} age อายุ (ปี)
+   * @param {number} workingDistanceCm ระยะทำงาน (เซนติเมตร)
+   */
+  function tentativeAdd(age, workingDistanceCm = 40) {
+    const amplitude = hofstetterAmplitude(age);
+    if (!amplitude) return null;
+    const distance = Math.max(toNum(workingDistanceCm, 40), 10);
+    const demand = 100 / distance;
+    const raw = demand - amplitude.min / 2;
+    // ปัดลงเป็นขั้น 0.25 D ตามค่าที่สั่งเลนส์ได้จริง และไม่ติดลบ
+    const stepped = Math.max(Math.round(raw * 4) / 4, 0);
+    return {
+      demand: round2(demand),
+      amplitudeMin: amplitude.min,
+      reserve: round2(amplitude.min / 2),
+      add: stepped,
+      workingDistanceCm: distance
+    };
+  }
+
+  /**
+   * ช่วงระยะที่มองชัดผ่านโซนใกล้ เมื่อใส่ ADD ค่าหนึ่ง
+   * ขอบไกลสุด = 100/ADD · ขอบใกล้สุด = 100/(ADD + กำลังเพ่งที่ยังใช้ได้)
+   */
+  function nearRange(add, age) {
+    const a = toNum(add, 0);
+    if (a <= 0) return null;
+    const amplitude = hofstetterAmplitude(age);
+    const usable = amplitude ? amplitude.min / 2 : 0;
+    return {
+      farCm: Math.round(100 / a),
+      nearCm: Math.round(100 / (a + usable)),
+      usableAmplitude: round2(usable)
+    };
+  }
+
+  /**
+   * ปริซึมที่เกิดจากการมองผ่านเลนส์นอกจุดศูนย์กลาง — กฎของ Prentice
+   *   Δ = c × F   โดย c = ระยะห่างจากจุดศูนย์กลางเลนส์ (เซนติเมตร)
+   * @param {number} powerD กำลังเลนส์ (ไดออปเตอร์)
+   * @param {number} offsetMm ระยะห่างจากจุดศูนย์กลาง (มิลลิเมตร)
+   */
+  const prenticePrism = (powerD, offsetMm) =>
+    Math.abs(toNum(powerD, 0)) * (Math.abs(toNum(offsetMm, 0)) / 10);
+
+  /**
+   * ความไม่สมดุลของปริซึมแนวดิ่งขณะอ่านหนังสือ (Vertical prism imbalance)
+   *
+   * เวลามองลงไปอ่านหนังสือ สายตาจะผ่านเลนส์ต่ำกว่าจุดศูนย์กลางราว 8–10 มม.
+   * ถ้ากำลังเลนส์สองข้างต่างกัน ปริซึมที่เกิดขึ้นจะไม่เท่ากัน ทำให้เมื่อยล้าหรือเห็นภาพซ้อน
+   * เกณฑ์ที่ใช้กันทั่วไปคือเกิน 1.00Δ ถือว่ามีนัยสำคัญและควรแก้ไข
+   */
+  function verticalImbalance(odSph, odCyl, osSph, osCyl, dropMm = 8) {
+    // ใช้กำลังในแนวดิ่ง (แกน 90) ซึ่งเท่ากับ SPH + CYL·sin²(axis) — ประมาณด้วย SE เพื่อความง่ายและปลอดภัย
+    const powerOd = sphericalEquivalent(odSph, odCyl);
+    const powerOs = sphericalEquivalent(osSph, osCyl);
+    const delta = Math.abs(prenticePrism(powerOd, dropMm) - prenticePrism(powerOs, dropMm));
+    return {
+      dropMm: toNum(dropMm, 8),
+      prismOd: round2(prenticePrism(powerOd, dropMm)),
+      prismOs: round2(prenticePrism(powerOs, dropMm)),
+      imbalance: round2(delta),
+      significant: delta >= 1.0
+    };
+  }
+
+  /**
+   * ประมาณความต่างของขนาดภาพสองข้าง (Aniseikonia) จาก Anisometropia
+   * หลักประมาณที่ใช้กันในคลินิก: ราว 1.5% ต่อความต่าง 1.00 D ของกำลังแว่น
+   * เกิน 3% เริ่มมีอาการ · เกิน 5% มักทนไม่ได้และควรพิจารณาคอนแทคเลนส์แทน
+   */
+  function aniseikoniaEstimate(anisoD) {
+    const diff = Math.abs(toNum(anisoD, 0));
+    const percent = round2(diff * 1.5);
+    return {
+      percent,
+      level: percent >= 5 ? 'high' : percent >= 3 ? 'moderate' : 'low'
+    };
+  }
+
+  /**
+   * ความโค้งหน้าเลนส์ที่เหมาะสม — สูตรประมาณของ Vogel
+   *   กำลังบวก : BC = SE + 6.00
+   *   กำลังลบ  : BC = SE/2 + 6.00
+   * ใช้ตรวจว่ากรอบโค้งมาก (Wrap) เข้ากับค่าสายตาหรือไม่
+   */
+  function vogelBaseCurve(se) {
+    const value = toNum(se, 0);
+    return round2(value >= 0 ? value + 6 : value / 2 + 6);
+  }
+
+  /**
+   * ความคลาดสีตามขวาง (Transverse Chromatic Aberration)
+   *   TCA (Δ) = ปริซึม ณ จุดที่มอง ÷ ค่า Abbe
+   * เกิน 0.10Δ เริ่มสังเกตเห็นขอบสี เกิน 0.20Δ รบกวนชัดเจน
+   */
+  function chromaticAberration(powerD, abbe, offsetMm = 10) {
+    const v = toNum(abbe, 58);
+    if (v <= 0) return 0;
+    return round2(prenticePrism(powerD, offsetMm) / v);
+  }
 
   /**
    * ชดเชยกำลังเลนส์เมื่อระยะ Vertex เปลี่ยน — F' = F / (1 − x·F)
@@ -908,7 +1074,9 @@
     /** เซสชันที่ได้จากการล็อกอิน — token เก็บใน sessionStorage ไม่ใช่ localStorage */
     session: { token: '', user: null, permissions: [] },
     /** ความยาวรหัสผ่านขั้นต่ำที่เซิร์ฟเวอร์กำหนด (อัปเดตจาก authStatus) */
-    minPasswordLength: 8
+    minPasswordLength: 8,
+    /** โหมดออฟไลน์ถูกล็อกหน้าจออยู่หรือไม่ (ไม่เกี่ยวกับโหมดที่มีบัญชีผู้ใช้) */
+    screenLocked: false
   };
 
   /** ตรวจสิทธิ์ฝั่งหน้าเว็บเพื่อซ่อนปุ่มเท่านั้น — ด่านจริงอยู่ที่เซิร์ฟเวอร์ */
@@ -985,6 +1153,7 @@
       loginPassword: $('#login-password'),
       loginSubmit: $('#login-submit'),
       loginChangePassword: $('#login-change-password'),
+      loginOffline: $('#login-offline'),
       changePasswordForm: $('#change-password-form'),
       changePasswordHint: $('#change-password-hint'),
       changePasswordError: $('#change-password-error'),
@@ -1076,6 +1245,8 @@
       aiSubmitBtn: $('#btn-request-ai'),
       aiClinicalBody: $('#ai-clinical-body'),
       aiClinicalNotes: $('#ai-clinical-notes'),
+      aiReasoningWrap: $('#ai-reasoning-wrap'),
+      aiReasoning: $('#ai-reasoning'),
       aiMaterialBody: $('#ai-material-body'),
 
       rxComputedBody: $('#rx-computed-body'),
@@ -1257,12 +1428,13 @@
     }
   }
 
-  /** สลับแผงบนหน้าล็อกอิน: 'checking' | 'formPanel' | 'changePassword' | 'setup' */
+  /** สลับแผงบนหน้าล็อกอิน: 'checking' | 'formPanel' | 'changePassword' | 'offline' | 'setup' */
   function showLoginPanel(name) {
     const panels = {
       checking: els.loginChecking,
       formPanel: els.loginFormPanel,
       changePassword: els.loginChangePassword,
+      offline: els.loginOffline,
       setup: els.loginSetup
     };
     Object.keys(panels).forEach((key) => {
@@ -1355,8 +1527,16 @@
   /** ตรวจว่าเซิร์ฟเวอร์พร้อมให้ล็อกอินหรือยัง แล้วแสดงหน้าจอที่เหมาะสม */
   async function initAuth() {
     if (state.backend.mode !== 'api') {
-      // โหมดออฟไลน์/อ่านอย่างเดียว ไม่มีเซิร์ฟเวอร์ให้ยืนยันตัวตน
-      setLocked(false);
+      // โหมดออฟไลน์/อ่านอย่างเดียว ไม่มีบัญชีผู้ใช้ให้ตรวจ
+      // "ออกจากระบบ" จึงหมายถึงล็อกหน้าจอ และต้องจำสถานะไว้ ไม่งั้นจะปลดล็อกตัวเองทันที
+      if (state.screenLocked) {
+        els.loginSubtitle.textContent = 'โหมดออฟไลน์ · ข้อมูลอยู่ในเครื่องนี้';
+        els.loginFootnote.textContent = 'ต้องการบัญชีผู้ใช้และรหัสผ่านจริง ให้เชื่อมต่อกับเซิร์ฟเวอร์ Apps Script';
+        showLoginPanel('offline');
+        setLocked(true);
+      } else {
+        setLocked(false);
+      }
       renderSession();
       return;
     }
@@ -1522,9 +1702,31 @@
     if (!ok) return;
 
     clearSession();
+    if (state.backend.mode !== 'api') setScreenLocked(true);
     renderSession();
-    showToast('ออกจากระบบเรียบร้อยแล้ว', 'info');
+    showToast(state.backend.mode === 'api' ? 'ออกจากระบบเรียบร้อยแล้ว' : 'ล็อกหน้าจอแล้ว', 'info');
     await initAuth();
+  }
+
+  /** จำสถานะล็อกหน้าจอของโหมดออฟไลน์ไว้ข้ามการรีโหลดหน้า */
+  function setScreenLocked(locked) {
+    state.screenLocked = locked;
+    if (!state.storageAvailable) return;
+    try {
+      if (locked) localStorage.setItem(CONFIG.lockKey, '1');
+      else localStorage.removeItem(CONFIG.lockKey);
+    } catch (error) {
+      /* จำไม่ได้ก็ไม่เป็นไร แค่ล็อกไม่ข้ามการรีโหลด */
+    }
+  }
+
+  function restoreScreenLock() {
+    if (!state.storageAvailable) return;
+    try {
+      state.screenLocked = localStorage.getItem(CONFIG.lockKey) === '1';
+    } catch (error) {
+      state.screenLocked = false;
+    }
   }
 
   /* ==========================================================================
@@ -4545,6 +4747,8 @@
     // เปลี่ยนปลายทางแล้วต้องยืนยันตัวตนใหม่กับเซิร์ฟเวอร์นั้น
     if (changed) {
       clearSession();
+      // ผู้ใช้เพิ่งตั้งค่าเองอยู่หน้าจอ จึงไม่ควรเจอหน้าล็อกทันทีหลังกดบันทึก
+      setScreenLocked(false);
       renderSession();
       await initAuth();
     }
@@ -4627,40 +4831,81 @@
    * @returns {object} รายงานคำแนะนำสำหรับนำไปแสดงผล
    */
   function analyzeConsultation(input) {
-    const { odSph, osSph, odCyl, osCyl, odAx, osAx, add, faceShape, lifestyle } = input;
+    const { odSph, osSph, odCyl, osCyl, odAx, osAx, add, age, faceShape, lifestyle } = input;
     const maxAbsSph = Math.max(Math.abs(odSph), Math.abs(osSph));
     const maxAbsCyl = Math.max(Math.abs(odCyl), Math.abs(osCyl));
     // วัดความต่างของสองตาจาก Spherical Equivalent ตามหลักปฏิบัติทางคลินิก
     const anisoValue = anisometropia(odSph, odCyl, osSph, osCyl);
+    const seOd = sphericalEquivalent(odSph, odCyl);
+    const seOs = sphericalEquivalent(osSph, osCyl);
     const diagnosis = [];
 
-    // --- สายตาสั้น / ยาว (แยกวิเคราะห์ทีละข้างเพื่อรองรับกรณีตาสองข้างต่างชนิดกัน) ---
-    const minusPower = Math.max(Math.abs(Math.min(odSph, 0)), Math.abs(Math.min(osSph, 0)));
-    const plusPower = Math.max(Math.max(odSph, 0), Math.max(osSph, 0));
+    /* --- จำแนกภาวะสายตาจาก Spherical Equivalent ทีละข้าง ---
+       ใช้ SE แทน SPH ดิบ เพราะ SE คือตำแหน่งวงกลมความสับสนน้อยที่สุด (circle of least confusion)
+       จึงสะท้อนภาวะสายตาโดยรวมของตาข้างนั้นได้ตรงกว่าเมื่อมีสายตาเอียงร่วมด้วย */
+    const gradeSphere = (se) => {
+      if (se <= CLINICAL_THRESHOLDS.highMyopia) return { code: 'HM', thai: 'สายตาสั้นระดับสูง', eng: 'High myopia' };
+      if (se <= CLINICAL_THRESHOLDS.moderateMyopia) return { code: 'MM', thai: 'สายตาสั้นระดับปานกลาง', eng: 'Moderate myopia' };
+      if (se <= -0.50) return { code: 'LM', thai: 'สายตาสั้นระดับเล็กน้อย', eng: 'Low myopia' };
+      if (se >= CLINICAL_THRESHOLDS.highHyperopia) return { code: 'HH', thai: 'สายตายาวระดับสูง', eng: 'High hyperopia' };
+      if (se >= 2.00) return { code: 'MH', thai: 'สายตายาวระดับปานกลาง', eng: 'Moderate hyperopia' };
+      if (se >= 0.50) return { code: 'LH', thai: 'สายตายาวระดับเล็กน้อย', eng: 'Low hyperopia' };
+      return { code: 'EM', thai: 'สายตาปกติ', eng: 'Emmetropia' };
+    };
 
-    if (minusPower > 0) {
-      if (minusPower >= 6) diagnosis.push('สายตาสั้นระดับสูง (High Myopia) ควรตรวจจอประสาทตาเป็นประจำ');
-      else if (minusPower >= 3) diagnosis.push('สายตาสั้นระดับปานกลาง (Moderate Myopia)');
-      else diagnosis.push('สายตาสั้นระดับเริ่มต้น (Mild Myopia)');
-    }
-    if (plusPower > 0) {
-      if (plusPower >= 4) diagnosis.push('สายตายาวระดับสูง (High Hyperopia) มีภาระการเพ่งมาก');
-      else diagnosis.push('สายตายาวแต่กำเนิด (Hyperopia)');
-    }
-    if (minusPower > 0 && plusPower > 0) {
-      diagnosis.push('ตาสองข้างมีชนิดค่าสายตาต่างกัน (Antimetropia)');
-    }
-    if (minusPower === 0 && plusPower === 0 && maxAbsCyl === 0) {
-      diagnosis.push('ไม่พบภาวะสายตาสั้นหรือยาว (Plano)');
+    const gradeOd = gradeSphere(seOd);
+    const gradeOs = gradeSphere(seOs);
+    const astigClassOd = astigmatismClass(odSph, odCyl);
+    const astigClassOs = astigmatismClass(osSph, osCyl);
+
+    /* SE ที่ใกล้ศูนย์ไม่ได้แปลว่าสายตาปกติเสมอไป — สายตาเอียงชนิดผสมทำให้แกนหนึ่งสั้น
+       อีกแกนยาว ค่าเฉลี่ยจึงหักล้างกันจนเหลือเกือบศูนย์ ทั้งที่ตายังมองไม่ชัด
+       กรณีนี้ต้องรายงานว่า "ค่าเฉลี่ยทรงกลมใกล้ศูนย์" ไม่ใช่ "สายตาปกติ" */
+    const bothEmmetropic = gradeOd.code === 'EM' && gradeOs.code === 'EM';
+    const maskedByCylinder = bothEmmetropic && maxAbsCyl >= 0.50;
+
+    if (maskedByCylinder) {
+      diagnosis.push(`ค่าเฉลี่ยทรงกลมใกล้ศูนย์ (SE ${formatDiopter(seOd)} / ${formatDiopter(seOs)} D) `
+        + 'แต่ความผิดปกติอยู่ที่สายตาเอียงเป็นหลัก');
+    } else if (gradeOd.code === gradeOs.code) {
+      diagnosis.push(`${gradeOd.thai}ทั้งสองข้าง (${gradeOd.eng}, SE ${formatDiopter(seOd)} / ${formatDiopter(seOs)} D)`);
+    } else {
+      diagnosis.push(`OD ${gradeOd.thai} (SE ${formatDiopter(seOd)} D) · OS ${gradeOs.thai} (SE ${formatDiopter(seOs)} D)`);
     }
 
-    // --- สายตาเอียง ---
-    if (maxAbsCyl >= 2) diagnosis.push('สายตาเอียงระดับสูง (High Astigmatism)');
-    else if (maxAbsCyl > 0) diagnosis.push('สายตาเอียง (Astigmatism)');
+    // ตาข้างหนึ่งสั้น อีกข้างยาว — ต่างกันคนละชนิด ไม่ใช่แค่ต่างกำลัง
+    if ((seOd < -0.50 && seOs > 0.50) || (seOd > 0.50 && seOs < -0.50)) {
+      diagnosis.push('ตาสองข้างเป็นคนละชนิด (Antimetropia) — การปรับตัวยากกว่าสายตาสั้น/ยาวทั้งสองข้าง');
+    }
 
-    // --- สายตายาวตามอายุ และความต่างของสองตา ---
-    if (add > 0) diagnosis.push(`สายตายาวตามอายุ (Presbyopia, ADD ${formatDiopter(add)})`);
-    if (anisoValue >= CLINICAL_THRESHOLDS.anisometropia) diagnosis.push('ค่าสายตาสองข้างต่างกันมาก (Anisometropia) เสี่ยงต่อภาพซ้อนและปวดศีรษะ');
+    // --- สายตาเอียง: ระบุทั้งระดับ ชนิดตามโฟกัส และทิศทางแกน ---
+    if (maxAbsCyl > 0) {
+      const level = maxAbsCyl >= CLINICAL_THRESHOLDS.highAstigmatism ? 'ระดับสูง' : maxAbsCyl >= 1.00 ? 'ระดับปานกลาง' : 'ระดับเล็กน้อย';
+      const classes = [astigClassOd, astigClassOs].filter(Boolean);
+      const sameClass = classes.length === 2 && classes[0].code === classes[1].code;
+      diagnosis.push(`สายตาเอียง${level} ${formatDiopter(-maxAbsCyl)} D`
+        + (classes.length ? ` — ${sameClass ? classes[0].thai : classes.map((c) => c.thai).join(' / ')}` : ''));
+
+      const axisTypes = [astigmatismType(odAx, odCyl), astigmatismType(osAx, osCyl)].filter(Boolean);
+      if (axisTypes.some((t) => t.code === 'OBL')) {
+        diagnosis.push('มีแกนเฉียง (Oblique) — ปรับตัวยากกว่าแกนตรง ควรอธิบายลูกค้าล่วงหน้า');
+      }
+    }
+
+    // --- สายตายาวตามอายุ ---
+    const amplitude = hofstetterAmplitude(age);
+    const addReference = tentativeAdd(age, 40);
+    if (add > 0) {
+      diagnosis.push(`สายตายาวตามอายุ (Presbyopia) ADD ${formatDiopter(add)} D`);
+    }
+
+    // --- ความต่างของสองตาและผลที่ตามมา ---
+    const imbalance = verticalImbalance(odSph, odCyl, osSph, osCyl, 8);
+    const aniseikonia = aniseikoniaEstimate(anisoValue);
+    if (anisoValue >= CLINICAL_THRESHOLDS.anisometropia) {
+      diagnosis.push(`ค่าสายตาสองข้างต่างกัน ${anisoValue.toFixed(2)} D (Anisometropia) `
+        + `— ประเมินภาพสองข้างต่างขนาดราว ${aniseikonia.percent}%`);
+    }
 
     // --- ดัชนีหักเหและโครงสร้างเลนส์ ---
     const seForIndex = maxAbsSph + maxAbsCyl / 2;
@@ -4742,17 +4987,32 @@
     return {
       input,
       metrics: {
-        seOd: sphericalEquivalent(odSph, odCyl),
-        seOs: sphericalEquivalent(osSph, osCyl),
+        seOd,
+        seOs,
         maxAbsSph,
         maxAbsCyl,
         sphericalEquivalent: seForIndex,
         anisometropia: anisoValue,
+        gradeOd,
+        gradeOs,
         astigOd: astigmatismType(input.odAx ?? 0, odCyl),
         astigOs: astigmatismType(input.osAx ?? 0, osCyl),
+        astigClassOd,
+        astigClassOs,
         plusCylOd: transpose(odSph, odCyl, input.odAx ?? 0),
-        plusCylOs: transpose(osSph, osCyl, input.osAx ?? 0)
+        plusCylOs: transpose(osSph, osCyl, input.osAx ?? 0),
+        amplitude,
+        addReference,
+        nearRange: nearRange(add, age),
+        imbalance,
+        aniseikonia,
+        baseCurveOd: vogelBaseCurve(seOd),
+        baseCurveOs: vogelBaseCurve(seOs)
       },
+      reasoning: buildClinicalReasoning({
+        input, seOd, seOs, maxAbsSph, maxAbsCyl, anisoValue,
+        amplitude, addReference, imbalance, aniseikonia, index
+      }),
       diagnosis: diagnosis.join(' · '),
       lens: { type, design, index, coatings },
       frame,
@@ -4760,6 +5020,157 @@
       dispensingAdvice,
       followUp: 'แนะนำให้ลูกค้าตรวจวัดสายตาซ้ำทุก 12 เดือน หรือเร็วกว่านั้นหากมีอาการตาล้า ปวดศีรษะ หรือมองเห็นไม่ชัด'
     };
+  }
+
+  /**
+   * สร้างเหตุผลเชิงวิชาการประกอบคำแนะนำ — แต่ละข้ออ้างอิงสูตรหรือเกณฑ์ที่ตรวจสอบได้
+   * แยกเป็นฟังก์ชันต่างหากเพื่อให้แก้เกณฑ์ทางคลินิกได้ที่เดียวโดยไม่ต้องแตะตรรกะการเลือกเลนส์
+   * @returns {Array<{topic, finding, basis, action}>}
+   */
+  function buildClinicalReasoning(ctx) {
+    const { input, seOd, seOs, maxAbsSph, maxAbsCyl, anisoValue,
+      amplitude, addReference, imbalance, aniseikonia, index } = ctx;
+    const { add, age, odSph, odCyl, osSph, osCyl, lifestyle } = input;
+    const notes = [];
+
+    /* ---------- กำลังเพ่งและ ADD ---------- */
+    if (amplitude) {
+      const expected = addReference;
+      const withinRange = add > 0 && expected
+        && Math.abs(add - expected.add) <= 0.75;
+
+      notes.push({
+        topic: 'กำลังเพ่งตามอายุ (Accommodative amplitude)',
+        finding: `อายุ ${age} ปี คาดหมายกำลังเพ่งราว ${amplitude.min.toFixed(2)}–${amplitude.max.toFixed(2)} D `
+          + `(ค่าเฉลี่ย ${amplitude.avg.toFixed(2)} D)`,
+        basis: 'สูตร Hofstetter: ต่ำสุด = 15 − 0.25×อายุ · เฉลี่ย = 18.5 − 0.30×อายุ · สูงสุด = 25 − 0.40×อายุ',
+        action: amplitude.min < 3 && add === 0 && age >= 40
+          ? 'กำลังเพ่งเหลือน้อยแล้วแต่ยังไม่ได้ให้ ADD — ควรตรวจการมองใกล้เพิ่มเติม'
+          : ''
+      });
+
+      if (expected) {
+        notes.push({
+          topic: 'ความเหมาะสมของค่า ADD',
+          finding: add > 0
+            ? `ADD ที่ให้ ${formatDiopter(add)} D · ค่าอ้างอิงตามอายุที่ระยะ ${expected.workingDistanceCm} ซม. ≈ ${formatDiopter(expected.add)} D`
+            : `ยังไม่ได้ให้ ADD · ค่าอ้างอิงตามอายุที่ระยะ ${expected.workingDistanceCm} ซม. ≈ ${formatDiopter(expected.add)} D`,
+          basis: `หลักสงวนกำลังเพ่งครึ่งหนึ่ง: ADD = ความต้องการที่ระยะทำงาน (${expected.demand.toFixed(2)} D) `
+            + `− กำลังเพ่งที่มี ÷ 2 (${expected.reserve.toFixed(2)} D)`,
+          action: add > 0 && !withinRange
+            ? (add > expected.add
+              ? 'ADD สูงกว่าค่าอ้างอิง — ระยะมองใกล้จะสั้นลง ตรวจสอบว่าลูกค้าทำงานระยะใกล้กว่า 40 ซม. จริงหรือไม่'
+              : 'ADD ต่ำกว่าค่าอ้างอิง — อาจไม่พอสำหรับงานระยะใกล้ ควรทดสอบการอ่านจริงก่อนสั่งตัด')
+            : ''
+        });
+      }
+    }
+
+    /* ---------- ปริซึมและความสมดุลสองตา ---------- */
+    if (anisoValue >= 1.0) {
+      notes.push({
+        topic: 'ปริซึมแนวดิ่งขณะอ่านหนังสือ (Vertical imbalance)',
+        finding: `มองต่ำกว่าจุดศูนย์กลางเลนส์ ${imbalance.dropMm} มม. เกิดปริซึม OD ${imbalance.prismOd.toFixed(2)}Δ · `
+          + `OS ${imbalance.prismOs.toFixed(2)}Δ · ต่างกัน ${imbalance.imbalance.toFixed(2)}Δ`,
+        basis: 'กฎของ Prentice: Δ = c × F เมื่อ c คือระยะจากจุดศูนย์กลางเลนส์ (ซม.)',
+        action: imbalance.significant
+          ? 'เกินเกณฑ์ 1.00Δ ที่มักทำให้เมื่อยล้าหรือเห็นภาพซ้อน — พิจารณา Slab-off, จุดศูนย์กลางแยกสำหรับอ่าน '
+            + 'หรือแยกแว่นอ่านหนังสือต่างหาก'
+          : 'ยังอยู่ในเกณฑ์ที่ผู้ใช้ส่วนใหญ่ปรับตัวได้'
+      });
+
+      notes.push({
+        topic: 'ภาพสองข้างต่างขนาด (Aniseikonia)',
+        finding: `ความต่างของกำลัง ${anisoValue.toFixed(2)} D ประเมินขนาดภาพต่างกันราว ${aniseikonia.percent}%`,
+        basis: 'ค่าประมาณทางคลินิก ~1.5% ต่อความต่าง 1.00 D ของกำลังแว่น',
+        action: aniseikonia.level === 'high'
+          ? 'เกิน 5% มักรวมภาพสองตาไม่ได้ — คอนแทคเลนส์ลดปัญหานี้ได้มากเพราะอยู่ชิดกระจกตา'
+          : aniseikonia.level === 'moderate'
+            ? 'อยู่ช่วง 3–5% ที่เริ่มมีอาการ — ควรนัดติดตามหลังใส่ 1–2 สัปดาห์'
+            : 'ต่ำกว่า 3% โดยทั่วไปปรับตัวได้'
+      });
+    }
+
+    /* ---------- ระยะ Vertex ---------- */
+    if (maxAbsSph >= CLINICAL_THRESHOLDS.vertexCriticalPower) {
+      const powerOd = seOd;
+      const powerOs = seOs;
+      notes.push({
+        topic: 'การชดเชยระยะ Vertex',
+        finding: `ที่ระยะแว่น 12 มม. กำลัง OD ${formatDiopter(powerOd)} D เทียบเท่า `
+          + `${formatDiopter(vertexCompensate(powerOd, 12))} D ที่ผิวกระจกตา · `
+          + `OS ${formatDiopter(powerOs)} → ${formatDiopter(vertexCompensate(powerOs, 12))} D`,
+        basis: "F′ = F / (1 − x·F) เมื่อ x คือระยะที่เลนส์ขยับเข้าหาตา (เมตร)",
+        action: 'ใช้ตัวเลขชุดหลังเมื่อแปลงไปสั่งคอนแทคเลนส์ และวัดระยะ Vertex จริงถ้ากรอบชิด/ห่างกว่าปกติ'
+      });
+    }
+
+    /* ---------- ความคลาดสีจากค่า Abbe ---------- */
+    const material = LENS_MATERIALS.find((m) => String(index).indexOf(String(m.index)) !== -1);
+    if (material && maxAbsSph >= 3) {
+      const tca = chromaticAberration(maxAbsSph, material.abbe, 10);
+      notes.push({
+        topic: 'ความคลาดสีตามขวาง (Transverse chromatic aberration)',
+        finding: `วัสดุที่แนะนำมีค่า Abbe ${material.abbe} · มองห่างจากศูนย์กลาง 10 มม. เกิดขอบสีราว ${tca.toFixed(2)}Δ`,
+        basis: 'TCA = ปริซึม ณ จุดที่มอง ÷ ค่า Abbe · เกิน 0.10Δ เริ่มสังเกตเห็น',
+        action: tca > 0.10
+          ? 'ลูกค้าอาจเห็นขอบสีเวลามองเฉียง — ถ้าไวต่ออาการนี้ให้ลดดัชนีหักเหลงหนึ่งขั้นแลกกับเลนส์หนาขึ้นเล็กน้อย'
+          : 'อยู่ในระดับที่แทบไม่สังเกตเห็น'
+      });
+    }
+
+    /* ---------- ความโค้งหน้าเลนส์กับกรอบ ---------- */
+    if (lifestyle.sport || maxAbsSph >= 4) {
+      notes.push({
+        topic: 'ความโค้งหน้าเลนส์ (Base curve)',
+        finding: `ค่าที่เหมาะสมโดยประมาณ OD ${vogelBaseCurve(seOd).toFixed(2)} D · OS ${vogelBaseCurve(seOs).toFixed(2)} D`,
+        basis: 'สูตรประมาณของ Vogel: กำลังบวก BC = SE + 6.00 · กำลังลบ BC = SE/2 + 6.00',
+        action: lifestyle.sport
+          ? 'กรอบทรงโค้งรับหน้า (Wrap) มีความโค้งสูงกว่าค่านี้มาก ต้องสั่งเลนส์แบบชดเชยมุมกรอบ '
+            + 'ไม่งั้นจะเกิดกำลังคลาดเคลื่อนและอาการภาพว่ายน้ำ'
+          : 'เลือกกรอบที่ความโค้งใกล้เคียงค่านี้ จะได้ภาพคมชัดถึงขอบเลนส์'
+      });
+    }
+
+    /* ---------- แสงสีฟ้า: ระบุระดับหลักฐานตามความเป็นจริง ---------- */
+    if (lifestyle.computer) {
+      notes.push({
+        topic: 'อาการล้าตาจากจอ (Digital eye strain)',
+        finding: 'ลูกค้าทำงานหน้าจอเป็นหลัก',
+        basis: 'งานทบทวนวรรณกรรมเชิงระบบหลายฉบับสรุปตรงกันว่า หลักฐานปัจจุบัน'
+          + 'ยังไม่เพียงพอที่จะบอกว่าเลนส์กรองแสงสีฟ้าช่วยลดอาการล้าตาได้ '
+          + 'สาเหตุหลักที่มีหลักฐานรองรับคืออัตราการกะพริบตาที่ลดลงและภาระการเพ่งค้างนาน',
+        action: 'แนะนำกฎ 20-20-20 (ทุก 20 นาที มองไกล 20 ฟุต นาน 20 วินาที) และตรวจว่าค่าสายตาระยะกลางเหมาะสม '
+          + 'ส่วนเลนส์กรองแสงสีฟ้าเสนอเป็นทางเลือกเพื่อความสบายตา ไม่ควรขายในฐานะการรักษา'
+      });
+    }
+
+    /* ---------- ความก้าวหน้าของสายตาสั้นในเด็ก ---------- */
+    if (age > 0 && age <= 18 && Math.min(seOd, seOs) <= -0.75) {
+      notes.push({
+        topic: 'การชะลอสายตาสั้นในเด็ก (Myopia control)',
+        finding: `อายุ ${age} ปี · SE ต่ำสุด ${formatDiopter(Math.min(seOd, seOs))} D`,
+        basis: 'สายตาสั้นที่เริ่มตั้งแต่อายุน้อยมีแนวโน้มเพิ่มขึ้นต่อเนื่องจนโครงสร้างตาคงที่ '
+          + 'และสายตาสั้นระดับสูงสัมพันธ์กับความเสี่ยงโรคจอประสาทตาในระยะยาว',
+        action: 'ควรวัดสายตาซ้ำทุก 6 เดือนเพื่อดูอัตราการเปลี่ยนแปลง และส่งปรึกษาจักษุแพทย์/ทัศนมาตรเรื่องแนวทางชะลอสายตาสั้น '
+          + 'แนะนำกิจกรรมกลางแจ้งอย่างน้อยวันละ 2 ชั่วโมง'
+      });
+    }
+
+    /* ---------- สายตาเอียงที่ยังไม่ได้แก้ ---------- */
+    if (maxAbsCyl >= 0.75) {
+      const blur = round2(maxAbsCyl / 2);
+      notes.push({
+        topic: 'ผลของสายตาเอียงต่อความคมชัด',
+        finding: `CYL สูงสุด ${formatDiopter(-maxAbsCyl)} D — ถ้าไม่แก้ จะเหลือความพร่ามัวเทียบเท่า ${formatDiopter(-blur)} D`,
+        basis: 'เมื่อไม่แก้สายตาเอียง จุดโฟกัสที่ดีที่สุดคือวงกลมความสับสนน้อยที่สุด ซึ่งห่างจากแต่ละแกนครึ่งหนึ่งของ CYL',
+        action: maxAbsCyl >= CLINICAL_THRESHOLDS.highAstigmatism
+          ? 'ค่าเอียงสูง ต้องกำหนดแกนให้แม่นยำ ความคลาดแกนเพียง 5° ทำให้ประสิทธิภาพการแก้ลดลงอย่างสังเกตได้'
+          : 'ควรแก้สายตาเอียงให้ครบเพื่อความคมชัดสูงสุด'
+      });
+    }
+
+    return notes;
   }
 
   /** ค้นหาสินค้าในคลังที่สอดคล้องกับดัชนีหักเห/โค้ทติ้งที่แนะนำ */
@@ -4785,14 +5196,20 @@
     const { input, metrics } = report;
 
     els.aiClinicalBody.innerHTML = [
-      ['OD (ขวา)', input.odSph, input.odCyl, input.odAx, metrics.seOd, metrics.astigOd, metrics.plusCylOd],
-      ['OS (ซ้าย)', input.osSph, input.osCyl, input.osAx, metrics.seOs, metrics.astigOs, metrics.plusCylOs]
-    ].map(([label, sph, cyl, ax, se, astig, plusCyl]) => html`
+      ['OD (ขวา)', input.odSph, input.odCyl, input.odAx, metrics.seOd, metrics.astigOd, metrics.astigClassOd, metrics.plusCylOd, metrics.gradeOd],
+      ['OS (ซ้าย)', input.osSph, input.osCyl, input.osAx, metrics.seOs, metrics.astigOs, metrics.astigClassOs, metrics.plusCylOs, metrics.gradeOs]
+    ].map(([label, sph, cyl, ax, se, astig, astigClass, plusCyl, grade]) => html`
       <tr>
         <th scope="row" class="py-1.5 px-2 border font-bold bg-gray-50">${label}</th>
         <td class="py-1.5 px-2 border font-mono">${formatDiopter(sph)} ${formatDiopter(cyl)} × ${ax}°</td>
-        <td class="py-1.5 px-2 border font-semibold">${formatDiopter(se)} D</td>
-        <td class="py-1.5 px-2 border">${astig ? `${astig.code} · ${astig.label}` : '—'}</td>
+        <td class="py-1.5 px-2 border font-semibold">
+          ${formatDiopter(se)} D
+          ${grade ? raw(html`<span class="block font-normal text-gray-500">${grade.thai}</span>`) : ''}
+        </td>
+        <td class="py-1.5 px-2 border">
+          ${astig ? `${astig.code} · ${astig.label}` : '—'}
+          ${astigClass ? raw(html`<span class="block text-gray-500">${astigClass.code} · ${astigClass.label}</span>`) : ''}
+        </td>
         <td class="py-1.5 px-2 border font-mono">
           ${cyl ? `${formatDiopter(plusCyl.sph)} ${formatDiopter(plusCyl.cyl)} × ${plusCyl.ax}°` : '—'}
         </td>
@@ -4812,9 +5229,14 @@
       notes.push(`<strong>การชดเชยระยะ Vertex:</strong> กำลังเลนส์ ${formatDiopter(-metrics.maxAbsSph)} D ที่ระยะ 12 มม. `
         + `เทียบเท่าประมาณ ${formatDiopter(asContactLens)} D ที่ผิวกระจกตา (สำหรับเทียบกับคอนแทคเลนส์)`);
     }
-    if (input.add > 0 && input.age) {
-      notes.push(`<strong>ความสัมพันธ์กับอายุ:</strong> ค่า ADD ${formatDiopter(input.add)} D ที่อายุ ${input.age} ปี `
-        + 'อยู่ในช่วงที่คาดหมายได้ตามการลดลงของกำลังเพ่ง (Amplitude of accommodation)');
+    if (metrics.nearRange) {
+      notes.push(`<strong>ช่วงระยะที่มองชัดผ่านโซนใกล้:</strong> ประมาณ `
+        + `${metrics.nearRange.nearCm}–${metrics.nearRange.farCm} ซม. `
+        + `(ขอบไกล = 100 ÷ ADD · ขอบใกล้ = 100 ÷ (ADD + กำลังเพ่งที่ยังใช้ได้ ${metrics.nearRange.usableAmplitude.toFixed(2)} D))`);
+    }
+    if (metrics.baseCurveOd || metrics.baseCurveOs) {
+      notes.push(`<strong>ความโค้งหน้าเลนส์ที่เหมาะสม (Vogel):</strong> `
+        + `OD ${metrics.baseCurveOd.toFixed(2)} D · OS ${metrics.baseCurveOs.toFixed(2)} D`);
     }
 
     els.aiClinicalNotes.innerHTML = notes
@@ -4857,12 +5279,36 @@
     }).join('');
   }
 
+  /** แสดงเหตุผลเชิงวิชาการทีละหัวข้อ: ตรวจพบอะไร · ใช้เกณฑ์ไหน · ควรทำอะไรต่อ */
+  function renderClinicalReasoning(report) {
+    const notes = report.reasoning || [];
+    els.aiReasoningWrap.classList.toggle('hidden', !notes.length);
+    if (!notes.length) return;
+
+    els.aiReasoning.innerHTML = notes.map((note) => html`
+      <div class="border border-gray-200 rounded-lg overflow-hidden">
+        <p class="bg-gray-50 px-3 py-1.5 text-2xs font-bold text-gray-800 border-b border-gray-200">
+          ${note.topic}
+        </p>
+        <div class="px-3 py-2 space-y-1 text-2xs leading-relaxed">
+          <p class="text-gray-800"><span class="font-semibold text-gray-500">ตรวจพบ:</span> ${note.finding}</p>
+          <p class="text-gray-600"><span class="font-semibold text-gray-500">อ้างอิง:</span> ${note.basis}</p>
+          ${note.action
+            ? raw(html`<p class="text-blue-800 bg-blue-50 border border-blue-100 rounded px-2 py-1 mt-1.5">
+                <span class="font-semibold">แนวทาง:</span> ${note.action}
+              </p>`)
+            : ''}
+        </div>
+      </div>`).join('');
+  }
+
   function renderConsultation(report) {
     state.lastConsultation = report;
 
     els.aiDiag.textContent = report.diagnosis || 'ไม่พบความผิดปกติที่ต้องระบุเพิ่มเติม';
 
     renderConsultClinical(report);
+    renderClinicalReasoning(report);
     renderMaterialComparison(report);
 
     els.aiLens.innerHTML = html`
@@ -4997,6 +5443,7 @@
       persistBackendSettings();
       updateBackendUi();
       clearSession();
+      setScreenLocked(false);
       renderSession();
       setLocked(false);
       showToast('เข้าสู่โหมดออฟไลน์ — ข้อมูลเก็บในเครื่องนี้เท่านั้น', 'info');
@@ -5004,6 +5451,11 @@
     'open-users': () => openUsersModal(),
     'change-password': () => openPasswordChange(),
     'retry-auth': () => initAuth(),
+    'unlock-offline': () => {
+      setScreenLocked(false);
+      setLocked(false);
+      renderSession();
+    },
     'toggle-password': (el) => {
       const input = document.getElementById(el.dataset.target);
       if (!input) return;
@@ -5206,6 +5658,7 @@
     cacheElements();
     state.storageAvailable = detectStorage();
     loadBackendSettings();
+    restoreScreenLock();
 
     if (!restore()) loadSeed();
 

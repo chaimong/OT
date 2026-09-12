@@ -160,6 +160,30 @@
         </form>
       </div>
 
+      <!-- ล็อกหน้าจอในโหมดออฟไลน์ (ไม่มีบัญชีผู้ใช้ให้ตรวจ) -->
+      <div id="login-offline" class="hidden space-y-3">
+        <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs text-slate-700 leading-relaxed">
+          <p class="font-bold text-slate-900 mb-1">
+            <i class="fa-solid fa-lock mr-1" aria-hidden="true"></i>
+            ล็อกหน้าจอแล้ว
+          </p>
+          <p>ข้อมูลทั้งหมดเก็บอยู่ในเครื่องนี้เท่านั้น ยังอยู่ครบไม่ได้ถูกลบ</p>
+          <p class="text-2xs text-slate-500 mt-2">
+            โหมดออฟไลน์ไม่มีบัญชีผู้ใช้และรหัสผ่าน การล็อกนี้เป็นเพียงการบังหน้าจอไม่ให้เห็นข้อมูลลูกค้า
+            ไม่ได้ป้องกันผู้ที่เข้าถึงเครื่องนี้ได้ — ถ้าต้องการความปลอดภัยจริงให้เชื่อมต่อเซิร์ฟเวอร์
+          </p>
+        </div>
+        <button type="button" data-action="unlock-offline"
+                class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow-md transition flex items-center justify-center gap-2">
+          <i class="fa-solid fa-lock-open" aria-hidden="true"></i>
+          <span>กลับเข้าใช้งาน</span>
+        </button>
+        <button type="button" data-action="open-backend-settings-from-login"
+                class="w-full border border-gray-200 text-gray-600 hover:bg-gray-50 font-semibold py-2.5 rounded-xl text-xs transition">
+          เชื่อมต่อเซิร์ฟเวอร์เพื่อใช้บัญชีผู้ใช้จริง
+        </button>
+      </div>
+
       <!-- ระหว่างตรวจสอบสถานะเซิร์ฟเวอร์ -->
       <div id="login-checking" class="text-center py-4">
         <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-3" aria-hidden="true"></div>
@@ -951,6 +975,18 @@
                   </table>
                 </div>
                 <div id="ai-clinical-notes" class="space-y-1.5 text-2xs"></div>
+              </section>
+
+              <!-- เหตุผลเชิงวิชาการประกอบคำแนะนำ -->
+              <section id="ai-reasoning-wrap" class="hidden space-y-2" aria-labelledby="ai-reasoning-heading">
+                <h3 id="ai-reasoning-heading" class="font-bold text-gray-800 text-sm flex items-center gap-2">
+                  <i class="fa-solid fa-book-open-reader text-blue-600" aria-hidden="true"></i>
+                  เหตุผลเชิงวิชาการ (Clinical Reasoning)
+                </h3>
+                <p class="text-2xs text-gray-500">
+                  แต่ละข้อระบุสิ่งที่ตรวจพบ · สูตรหรือเกณฑ์ที่ใช้ · และสิ่งที่ควรทำต่อ เพื่อให้ตรวจสอบย้อนกลับได้
+                </p>
+                <div id="ai-reasoning" class="space-y-2"></div>
               </section>
 
               <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
