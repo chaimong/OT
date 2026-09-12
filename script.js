@@ -1085,6 +1085,10 @@
       examHistory: $('#exam-history'),
       examProgression: $('#exam-progression'),
       examModeWrap: $('#exam-mode-wrap'),
+      examEditWrap: $('#exam-edit-wrap'),
+      examEditingId: $('#exam-editing-id'),
+      examEditingDate: $('#exam-editing-date'),
+      deleteCustomerBtn: $('#btn-delete-customer'),
 
       syncReportBody: $('#sync-report-body'),
       syncReportTitle: $('#sync-report-title-text'),
@@ -2203,8 +2207,14 @@
       : 'ลงทะเบียนผู้รับบริการใหม่ & บันทึกค่าสายตา';
     $('#cust-id').value = customer ? customer.id : '';
     $('#exam-date').value = todayISO();
+    setExamEditing(null);
     els.examModeWrap.classList.toggle('hidden', !customer);
     $('#exam-as-new').checked = true;
+
+    // ปุ่มลบแสดงเฉพาะตอนเปิดแฟ้มเดิม และเฉพาะบทบาทที่ลบได้
+    const showDelete = Boolean(customer) && can('deleteCustomer');
+    els.deleteCustomerBtn.classList.toggle('hidden', !showDelete);
+    els.deleteCustomerBtn.classList.toggle('flex', showDelete);
 
     if (customer) {
       const latest = customer.history[0];
@@ -2249,6 +2259,112 @@
     openModal(modal);
   }
 
+  /**
+   * สลับฟอร์มเข้า/ออกโหมด "แก้ไขผลตรวจรายการเดิม"
+   * @param {Object|null} exam ผลตรวจที่กำลังแก้ไข หรือ null เพื่อกลับสู่โหมดปกติ
+   */
+  function setExamEditing(exam) {
+    els.examEditingId.value = exam ? exam.id : '';
+    els.examEditWrap.classList.toggle('hidden', !exam);
+
+    // สองกล่องนี้ใช้พื้นที่เดียวกัน แสดงพร้อมกันไม่ได้
+    const customerId = $('#cust-id').value;
+    els.examModeWrap.classList.toggle('hidden', Boolean(exam) || !customerId);
+
+    if (exam) els.examEditingDate.textContent = thaiDate(exam.date);
+  }
+
+  /** เติมค่าของผลตรวจหนึ่งรายการลงในฟอร์ม เพื่อแก้ไขย้อนหลัง */
+  function editExam(examId) {
+    const customer = state.customers.find((c) => c.id === $('#cust-id').value);
+    const exam = customer && customer.history.find((item) => item.id === examId);
+    if (!exam) {
+      showToast('ไม่พบผลตรวจรายการนี้', 'error');
+      return;
+    }
+
+    const { distance, near, pd, segHeight } = exam.refraction;
+    $('#exam-date').value = exam.date;
+    $('#exam-optometrist').value = exam.optometrist;
+    $('#exam-method').value = exam.method;
+    $('#exam-note').value = exam.note;
+
+    ['od', 'os'].forEach((eye) => {
+      $(`#ref-${eye}-sph`).value = distance[eye].sph;
+      $(`#ref-${eye}-cyl`).value = distance[eye].cyl || '';
+      $(`#ref-${eye}-ax`).value = distance[eye].ax || '';
+      $(`#ref-${eye}-va`).value = distance[eye].va;
+      $(`#ref-${eye}-add`).value = near[eye].add || '';
+      $(`#ref-${eye}-near-sph`).value = near[eye].add ? near[eye].sph : '';
+      $(`#ref-${eye}-near-va`).value = near[eye].va;
+      // ค่า Near SPH ที่โหลดมาถือว่าผู้ใช้กำหนดเองแล้ว อย่าคำนวณทับ
+      $(`#ref-${eye}-near-sph`).dataset.touched = 'true';
+    });
+
+    $('#ref-pd-far').value = pd.far || '';
+    $('#ref-pd-near').value = pd.near || '';
+    $('#ref-seg-height').value = segHeight || '';
+
+    setExamEditing(exam);
+    renderRxComputed();
+
+    // เลื่อนขึ้นไปที่ฟอร์มผลตรวจให้เห็นว่ากำลังแก้อะไรอยู่
+    els.examEditWrap.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    showToast(`โหลดผลตรวจวันที่ ${thaiDate(exam.date)} มาแก้ไขแล้ว`, 'info');
+  }
+
+  async function deleteExam(examId) {
+    const customerIndex = state.customers.findIndex((c) => c.id === $('#cust-id').value);
+    if (customerIndex === -1) return;
+
+    const customer = state.customers[customerIndex];
+    const exam = customer.history.find((item) => item.id === examId);
+    if (!exam) return;
+
+    // ต้องเหลือผลตรวจอย่างน้อยหนึ่งรายการ ไม่งั้นแฟ้มจะไม่มีค่าสายตาอ้างอิงเลย
+    if (customer.history.length <= 1) {
+      showToast('ลบไม่ได้ — ต้องเหลือผลตรวจอย่างน้อยหนึ่งรายการในแฟ้ม', 'error');
+      return;
+    }
+
+    const ok = await askConfirm({
+      title: 'ลบผลการตรวจ',
+      message: `ลบผลตรวจวันที่ ${thaiDate(exam.date)} ของ "${customer.name}" ใช่หรือไม่? `
+        + 'การลบนี้ย้อนกลับไม่ได้ และค่าสายตาอ้างอิงของแฟ้มจะเปลี่ยนไปใช้ผลตรวจที่ใหม่ที่สุดที่เหลืออยู่',
+      confirmLabel: 'ลบผลตรวจ',
+      danger: true
+    });
+    if (!ok) return;
+
+    const history = customer.history.filter((item) => item.id !== examId);
+    state.customers[customerIndex] = normalizeCustomer({ ...customer, history, updatedAt: todayISO() });
+    persist();
+
+    // ถ้ากำลังแก้ไขรายการที่เพิ่งลบอยู่ ต้องออกจากโหมดแก้ไข
+    if (els.examEditingId.value === examId) setExamEditing(null);
+
+    renderExamHistory(state.customers[customerIndex]);
+    renderAll();
+    showToast('ลบผลการตรวจเรียบร้อยแล้ว', 'info');
+
+    if (backendConfigured()) {
+      try {
+        await apiCall('saveExam', { record: examToApi(customer.id, history[0]) }, 'POST');
+        showToast('อัปเดตค่าสายตาล่าสุดขึ้นเซิร์ฟเวอร์แล้ว');
+      } catch (error) {
+        showToast(`ลบในเครื่องแล้ว แต่อัปเดตเซิร์ฟเวอร์ไม่สำเร็จ: ${error.message}`, 'error');
+      }
+    }
+  }
+
+  /** ลบผู้รับบริการจากปุ่มในหน้าต่างแฟ้มประวัติ */
+  async function deleteCustomerFromForm() {
+    const id = $('#cust-id').value;
+    if (!id) return;
+    closeModal($('#modal-customer'));
+    await deleteCustomer(id);
+  }
+
   /** แสดงแฟ้มประวัติการตรวจย้อนหลังในหน้าต่างแฟ้มลูกค้า */
   function renderExamHistory(customer) {
     if (!customer || customer.history.length < 1) {
@@ -2256,6 +2372,10 @@
       return;
     }
     els.examHistoryWrap.classList.remove('hidden');
+
+    // แก้ผลตรวจได้เฉพาะบทบาทที่บันทึกผลตรวจได้ และต้องเหลือผลตรวจไว้อย่างน้อยหนึ่งรายการเสมอ
+    const canEditExams = can('saveExam');
+    const onlyOne = customer.history.length <= 1;
 
     els.examHistory.innerHTML = customer.history.map((exam, index) => {
       const { distance, near } = exam.refraction;
@@ -2281,6 +2401,22 @@
           <td class="py-2 px-2 border text-gray-500">
             ${exam.optometrist || '—'}${exam.note ? ` · ${exam.note}` : ''}
             <span class="block text-gray-400">${exam.method}</span>
+          </td>
+          <td class="py-2 px-2 border text-center whitespace-nowrap">
+            ${canEditExams
+              ? raw(html`
+                  <button type="button" data-action="edit-exam" data-id="${exam.id}"
+                          class="p-1.5 text-blue-600 hover:bg-blue-50 rounded" title="แก้ไขผลตรวจนี้"
+                          aria-label="แก้ไขผลตรวจวันที่ ${thaiDate(exam.date)}">
+                    <i class="fa-solid fa-pen" aria-hidden="true"></i>
+                  </button>
+                  <button type="button" data-action="delete-exam" data-id="${exam.id}"
+                          class="p-1.5 text-rose-600 hover:bg-rose-50 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                          title="${onlyOne ? 'ผลตรวจรายการสุดท้ายลบไม่ได้' : 'ลบผลตรวจนี้'}"
+                          aria-label="ลบผลตรวจวันที่ ${thaiDate(exam.date)}" ${raw(onlyOne ? 'disabled' : '')}>
+                    <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
+                  </button>`)
+              : raw('<span class="text-gray-300">—</span>')}
           </td>
         </tr>`;
     }).join('');
@@ -2395,18 +2531,34 @@
 
     const draft = readCustomerForm();
     const isEdit = Boolean(draft.id);
-    const asNewExam = $('#exam-as-new').checked;
-    const newExam = normalizeExam({ ...draft.exam, refraction: draft.refraction });
+    // ถ้ากดปุ่มแก้ไขจากแฟ้มประวัติ จะเขียนทับ "รายการนั้น" ไม่ใช่รายการล่าสุด
+    const editingExamId = els.examEditingId.value;
+    const asNewExam = !editingExamId && $('#exam-as-new').checked;
+    const newExam = normalizeExam({
+      ...draft.exam,
+      id: editingExamId || undefined,
+      refraction: draft.refraction
+    });
+
+    const existingExam = editingExamId && isEdit
+      ? (state.customers.find((c) => c.id === draft.id) || { history: [] })
+          .history.find((item) => item.id === editingExamId)
+      : null;
 
     const ok = await askConfirm({
-      title: isEdit
-        ? (asNewExam ? 'ยืนยันการบันทึกผลตรวจครั้งใหม่' : 'ยืนยันการแก้ไขผลตรวจล่าสุด')
-        : 'ยืนยันการลงทะเบียนผู้รับบริการใหม่',
-      message: isEdit
-        ? (asNewExam
-          ? `เพิ่มผลการตรวจวันที่ ${thaiDate(newExam.date)} ลงในแฟ้มของ "${draft.name}" โดยเก็บผลตรวจเดิมไว้ ใช่หรือไม่?`
-          : `เขียนทับผลการตรวจล่าสุดของ "${draft.name}" ใช่หรือไม่? ข้อมูลผลตรวจเดิมจะหายไปอย่างถาวร`)
-        : `บันทึกผู้รับบริการใหม่ "${draft.name}" พร้อมผลตรวจวันที่ ${thaiDate(newExam.date)} ใช่หรือไม่?`,
+      title: !isEdit
+        ? 'ยืนยันการลงทะเบียนผู้รับบริการใหม่'
+        : editingExamId
+          ? 'ยืนยันการแก้ไขผลตรวจย้อนหลัง'
+          : asNewExam ? 'ยืนยันการบันทึกผลตรวจครั้งใหม่' : 'ยืนยันการแก้ไขผลตรวจล่าสุด',
+      message: !isEdit
+        ? `บันทึกผู้รับบริการใหม่ "${draft.name}" พร้อมผลตรวจวันที่ ${thaiDate(newExam.date)} ใช่หรือไม่?`
+        : editingExamId
+          ? `เขียนทับผลตรวจวันที่ ${thaiDate(existingExam ? existingExam.date : newExam.date)} ของ "${draft.name}" `
+            + `ด้วยค่าที่กรอกใหม่ (ลงวันที่ ${thaiDate(newExam.date)}) ใช่หรือไม่? ข้อมูลเดิมของรายการนี้จะหายไปอย่างถาวร`
+          : asNewExam
+            ? `เพิ่มผลการตรวจวันที่ ${thaiDate(newExam.date)} ลงในแฟ้มของ "${draft.name}" โดยเก็บผลตรวจเดิมไว้ ใช่หรือไม่?`
+            : `เขียนทับผลการตรวจล่าสุดของ "${draft.name}" ใช่หรือไม่? ข้อมูลผลตรวจเดิมจะหายไปอย่างถาวร`,
       confirmLabel: 'ยืนยันการบันทึก',
       danger: isEdit && !asNewExam
     });
@@ -2419,10 +2571,19 @@
         return;
       }
       const existing = state.customers[index];
-      // แทนที่ผลตรวจของวันเดียวกันเสมอ เพื่อไม่ให้เกิดรายการซ้ำในแฟ้มประวัติ
-      const history = asNewExam
-        ? [newExam, ...existing.history.filter((exam) => exam.date !== newExam.date)]
-        : [newExam, ...existing.history.slice(1)];
+
+      let history;
+      if (editingExamId) {
+        // เขียนทับเฉพาะรายการที่เลือก แล้วตัดรายการอื่นที่บังเอิญลงวันที่ชนกันออก
+        history = existing.history
+          .map((exam) => (exam.id === editingExamId ? newExam : exam))
+          .filter((exam) => exam.id === editingExamId || exam.date !== newExam.date);
+      } else if (asNewExam) {
+        // แทนที่ผลตรวจของวันเดียวกันเสมอ เพื่อไม่ให้เกิดรายการซ้ำในแฟ้มประวัติ
+        history = [newExam, ...existing.history.filter((exam) => exam.date !== newExam.date)];
+      } else {
+        history = [newExam, ...existing.history.slice(1)];
+      }
 
       state.customers[index] = normalizeCustomer({
         ...existing,
@@ -2430,7 +2591,9 @@
         history,
         updatedAt: todayISO()
       });
-      showToast(asNewExam ? 'บันทึกผลการตรวจครั้งใหม่เรียบร้อยแล้ว' : 'แก้ไขผลการตรวจล่าสุดเรียบร้อยแล้ว');
+      showToast(editingExamId
+        ? 'แก้ไขผลตรวจย้อนหลังเรียบร้อยแล้ว'
+        : asNewExam ? 'บันทึกผลการตรวจครั้งใหม่เรียบร้อยแล้ว' : 'แก้ไขผลการตรวจล่าสุดเรียบร้อยแล้ว');
     } else {
       state.customers.push(normalizeCustomer({
         ...draft,
@@ -4825,6 +4988,14 @@
     'new-customer': () => openCustomerModal(),
     'edit-customer': (el) => { switchTab('customers', { keepScroll: true, focusPanel: false }); openCustomerModal(el.dataset.id); },
     'delete-customer': (el) => deleteCustomer(el.dataset.id),
+    'delete-customer-from-form': () => deleteCustomerFromForm(),
+    'edit-exam': (el) => editExam(el.dataset.id),
+    'delete-exam': (el) => deleteExam(el.dataset.id),
+    'cancel-exam-edit': () => {
+      setExamEditing(null);
+      $('#exam-date').value = todayISO();
+      showToast('ออกจากโหมดแก้ไขแล้ว — การบันทึกครั้งถัดไปจะเป็นผลตรวจครั้งใหม่', 'info');
+    },
     'quick-new-customer': () => { switchTab('customers'); openCustomerModal(); },
 
     'new-product': () => openProductModal(),

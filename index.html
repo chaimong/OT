@@ -1041,17 +1041,24 @@
   <!-- ==================== MODALS ==================== -->
 
   <!-- Modal: Customer -->
-  <div id="modal-customer" data-modal class="hidden fixed inset-0 z-[100] bg-black/50 overflow-y-auto flex items-center justify-center p-4"
+  <div id="modal-customer" data-modal class="hidden fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-2 sm:p-4"
        role="dialog" aria-modal="true" aria-labelledby="customer-modal-title">
-    <div class="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl relative my-8">
-      <button type="button" data-action="close-modal" aria-label="ปิดหน้าต่าง"
-              class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
-        <i class="fa-solid fa-xmark text-xl" aria-hidden="true"></i>
-      </button>
-      <h2 class="text-xl font-bold text-gray-900 mb-4" id="customer-modal-title">ลงทะเบียนลูกค้า &amp; ค่าสายตา</h2>
+    <!-- แบ่งเป็น 3 ส่วน: หัวข้อ · เนื้อหาที่เลื่อนได้ · ปุ่มบันทึก — ฟอร์มยาวแค่ไหนก็ไม่ล้นจอ -->
+    <div class="modal-panel bg-white rounded-2xl max-w-3xl w-full shadow-2xl relative">
+      <div class="modal-head">
+        <div class="pr-10">
+          <h2 class="text-lg sm:text-xl font-bold text-gray-900" id="customer-modal-title">ลงทะเบียนลูกค้า &amp; ค่าสายตา</h2>
+          <p class="text-2xs text-gray-500 mt-0.5">บันทึกข้อมูลส่วนตัวและผลตรวจในหน้าต่างเดียว เลื่อนดูได้ทั้งหมด</p>
+        </div>
+        <button type="button" data-action="close-modal" aria-label="ปิดหน้าต่าง"
+                class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
+          <i class="fa-solid fa-xmark text-xl" aria-hidden="true"></i>
+        </button>
+      </div>
 
-      <form id="customer-form" class="space-y-6 text-sm" novalidate>
+      <form id="customer-form" class="modal-form text-sm" novalidate>
         <input type="hidden" id="cust-id">
+        <div class="modal-body space-y-6">
 
         <fieldset class="space-y-3">
           <legend class="font-semibold text-blue-800 border-b border-gray-200 pb-1 text-xs uppercase tracking-wider w-full">ข้อมูลทั่วไป</legend>
@@ -1171,6 +1178,22 @@
                 <span class="text-2xs text-blue-700">ยกเลิกการเลือกนี้เฉพาะกรณีต้องการ “แก้ไขข้อผิดพลาด” ของผลตรวจล่าสุด ซึ่งจะเขียนทับข้อมูลเดิม</span>
               </span>
             </label>
+          </div>
+
+          <!-- แสดงแทน exam-mode-wrap เมื่อกดแก้ไขผลตรวจรายการใดรายการหนึ่งจากแฟ้มประวัติ -->
+          <div id="exam-edit-wrap" class="hidden bg-amber-50 border border-amber-300 rounded-lg p-3">
+            <input type="hidden" id="exam-editing-id">
+            <div class="flex items-start justify-between gap-3">
+              <p class="text-xs text-amber-900 leading-relaxed">
+                <i class="fa-solid fa-pen-to-square mr-1" aria-hidden="true"></i>
+                <strong>กำลังแก้ไขผลตรวจวันที่ <span id="exam-editing-date">—</span></strong><br>
+                <span class="text-2xs text-amber-800">กดบันทึกแล้วจะเขียนทับผลตรวจรายการนี้ ไม่ได้เพิ่มรายการใหม่</span>
+              </p>
+              <button type="button" data-action="cancel-exam-edit"
+                      class="shrink-0 px-2.5 py-1 border border-amber-300 bg-white text-amber-800 hover:bg-amber-100 rounded-lg text-2xs font-semibold transition">
+                ยกเลิกการแก้ไข
+              </button>
+            </div>
           </div>
         </fieldset>
 
@@ -1369,6 +1392,7 @@
                   <th scope="col" class="py-2 px-2 border text-center">ADD</th>
                   <th scope="col" class="py-2 px-2 border text-center">SE เฉลี่ย</th>
                   <th scope="col" class="py-2 px-2 border">ผู้ตรวจ / บันทึก</th>
+                  <th scope="col" class="py-2 px-2 border text-center whitespace-nowrap">จัดการ</th>
                 </tr>
               </thead>
               <tbody id="exam-history" class="divide-y divide-gray-100"></tbody>
@@ -1376,8 +1400,14 @@
           </div>
           <p id="exam-progression" class="text-2xs"></p>
         </section>
+        </div>
 
-        <div class="flex justify-end space-x-3 pt-3">
+        <div class="modal-foot flex flex-wrap justify-end gap-3">
+          <button type="button" data-action="delete-customer-from-form" id="btn-delete-customer"
+                  class="hidden mr-auto px-4 py-2 border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-lg font-semibold text-xs transition items-center gap-1.5">
+            <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
+            <span>ลบผู้รับบริการนี้</span>
+          </button>
           <button type="button" data-action="close-modal" class="px-4 py-2 border rounded-lg text-gray-600 hover:bg-gray-50">ยกเลิก</button>
           <button type="submit" class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg shadow">บันทึกข้อมูล</button>
         </div>
@@ -1386,16 +1416,19 @@
   </div>
 
   <!-- Modal: Product -->
-  <div id="modal-product" data-modal class="hidden fixed inset-0 z-[100] bg-black/50 overflow-y-auto flex items-center justify-center p-4"
+  <div id="modal-product" data-modal class="hidden fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-2 sm:p-4"
        role="dialog" aria-modal="true" aria-labelledby="product-modal-title">
-    <div class="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl relative my-8">
-      <button type="button" data-action="close-modal" aria-label="ปิดหน้าต่าง"
-              class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
-        <i class="fa-solid fa-xmark text-xl" aria-hidden="true"></i>
-      </button>
-      <h2 class="text-xl font-bold text-gray-900 mb-4" id="product-modal-title">เพิ่มสินค้าเข้าคลัง</h2>
+    <div class="modal-panel bg-white rounded-2xl max-w-md w-full shadow-2xl relative">
+      <div class="modal-head">
+        <h2 class="text-lg sm:text-xl font-bold text-gray-900 pr-10" id="product-modal-title">เพิ่มสินค้าเข้าคลัง</h2>
+        <button type="button" data-action="close-modal" aria-label="ปิดหน้าต่าง"
+                class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
+          <i class="fa-solid fa-xmark text-xl" aria-hidden="true"></i>
+        </button>
+      </div>
 
-      <form id="product-form" class="space-y-4 text-sm" novalidate>
+      <form id="product-form" class="modal-form text-sm" novalidate>
+        <div class="modal-body space-y-4">
         <input type="hidden" id="prod-id">
         <div>
           <label for="prod-category" class="block text-xs font-medium text-gray-600 mb-1">หมวดหมู่สินค้า *</label>
@@ -1440,8 +1473,9 @@
                    class="w-full px-3 py-2 rounded-lg border focus:ring-1 focus:ring-blue-500 focus:outline-none">
           </div>
         </div>
+        </div>
 
-        <div class="flex justify-end space-x-3 pt-3">
+        <div class="modal-foot flex justify-end gap-3">
           <button type="button" data-action="close-modal" class="px-4 py-2 border rounded-lg text-gray-600 hover:bg-gray-50">ยกเลิก</button>
           <button type="submit" class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg shadow">บันทึกสินค้า</button>
         </div>
@@ -1450,16 +1484,19 @@
   </div>
 
   <!-- Modal: Order -->
-  <div id="modal-order" data-modal class="hidden fixed inset-0 z-[100] bg-black/50 overflow-y-auto flex items-center justify-center p-4"
+  <div id="modal-order" data-modal class="hidden fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-2 sm:p-4"
        role="dialog" aria-modal="true" aria-labelledby="order-modal-title">
-    <div class="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl relative my-8">
-      <button type="button" data-action="close-modal" aria-label="ปิดหน้าต่าง"
-              class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
-        <i class="fa-solid fa-xmark text-xl" aria-hidden="true"></i>
-      </button>
-      <h2 class="text-xl font-bold text-gray-900 mb-4" id="order-modal-title">เปิดบิลขาย / สั่งตัดแว่นตา</h2>
+    <div class="modal-panel bg-white rounded-2xl max-w-2xl w-full shadow-2xl relative">
+      <div class="modal-head">
+        <h2 class="text-lg sm:text-xl font-bold text-gray-900 pr-10" id="order-modal-title">เปิดบิลขาย / สั่งตัดแว่นตา</h2>
+        <button type="button" data-action="close-modal" aria-label="ปิดหน้าต่าง"
+                class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
+          <i class="fa-solid fa-xmark text-xl" aria-hidden="true"></i>
+        </button>
+      </div>
 
-      <form id="order-form" class="space-y-4 text-sm" novalidate>
+      <form id="order-form" class="modal-form text-sm" novalidate>
+        <div class="modal-body space-y-4">
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div class="sm:col-span-2">
             <label for="ord-customer" class="block text-xs font-medium text-gray-600 mb-1">ผู้รับบริการ *</label>
@@ -1672,8 +1709,9 @@
                    class="w-full px-3 py-2 rounded-lg border bg-amber-50 text-amber-700 font-bold">
           </div>
         </div>
+        </div>
 
-        <div class="flex justify-end space-x-3 pt-3">
+        <div class="modal-foot flex justify-end gap-3">
           <button type="button" data-action="close-modal" class="px-4 py-2 border rounded-lg text-gray-600 hover:bg-gray-50">ยกเลิก</button>
           <button type="submit" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg shadow">บันทึกและเปิดบิล</button>
         </div>

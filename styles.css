@@ -73,6 +73,66 @@ body.is-modal-open {
   overflow: hidden;
 }
 
+/* ---------- โครงหน้าต่าง modal ----------
+   ฟอร์มลงทะเบียนลูกค้าและใบสั่งยาวเกินความสูงจอ ถ้าปล่อยให้หน้าต่างสูงตามเนื้อหา
+   แล้วจัดกึ่งกลางด้วย flex ส่วนหัวจะถูกดันขึ้นไปนอกพื้นที่ที่เลื่อนถึง — เลื่อนกลับไปดูไม่ได้
+
+   จึงล็อกความสูงหน้าต่างไว้ที่ขนาดจอ แล้วให้ "เฉพาะเนื้อหาตรงกลาง" เลื่อน
+   หัวข้อกับปุ่มบันทึกอยู่กับที่เสมอ ไม่ต้องเลื่อนหาปุ่ม */
+
+.modal-panel {
+  display: flex;
+  flex-direction: column;
+  /* dvh ตัดปัญหาแถบที่อยู่ของเบราว์เซอร์มือถือที่ยุบ/ขยายเวลาเลื่อน */
+  max-height: calc(100vh - 1rem);
+  max-height: calc(100dvh - 1rem);
+}
+
+@media (min-width: 640px) {
+  .modal-panel {
+    max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - 2rem);
+  }
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  /* min-height:0 จำเป็นกับ flex item ที่มีลูกเลื่อนได้ ไม่งั้นจะไม่ยอมหด */
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.modal-head {
+  flex: 0 0 auto;
+  padding: 1.25rem 1.5rem 0.875rem;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 1.25rem 1.5rem;
+}
+
+.modal-foot {
+  flex: 0 0 auto;
+  padding: 0.875rem 1.5rem 1.25rem;
+  border-top: 1px solid #f1f5f9;
+  background: #fff;
+  border-bottom-left-radius: 1rem;
+  border-bottom-right-radius: 1rem;
+}
+
+@media (max-width: 640px) {
+  .modal-head { padding: 1rem 1rem 0.75rem; }
+  .modal-body { padding: 1rem; }
+  .modal-foot { padding: 0.75rem 1rem 1rem; }
+}
+
 /* ---------- Components ---------- */
 
 .field-invalid {
