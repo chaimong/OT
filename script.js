@@ -2627,20 +2627,40 @@
     const customer = state.customers.find((c) => c.id === id);
     if (!customer) return;
     const linkedOrders = state.orders.filter((order) => order.customerId === id).length;
+    const onServer = backendConfigured();
 
     const ok = await askConfirm({
       title: 'ยืนยันการลบข้อมูลลูกค้า',
-      message: `ลบข้อมูลของ "${customer.name}" อย่างถาวรใช่หรือไม่? ประวัติค่าสายตาทั้งหมดจะหายไป`
-        + (linkedOrders ? ` (ลูกค้ารายนี้มีออเดอร์ผูกอยู่ ${linkedOrders} รายการ ซึ่งจะยังคงอยู่ในระบบ)` : ''),
-      confirmLabel: 'ยืนยันการลบ',
+      message: `ลบ "${customer.name}" พร้อมประวัติค่าสายตาทั้งหมด ${customer.history.length} รายการ `
+        + (onServer
+          ? 'ออกจาก Google Sheets อย่างถาวรใช่หรือไม่? ข้อมูลจะถูกลบออกจากฐานข้อมูลจริง กู้คืนไม่ได้'
+          : 'ออกจากเครื่องนี้อย่างถาวรใช่หรือไม่? กู้คืนไม่ได้')
+        + (linkedOrders
+          ? ` — ใบสั่ง ${linkedOrders} ใบของลูกค้ารายนี้จะยังอยู่ในระบบเป็นหลักฐานการขาย (ใบสั่งเก็บสำเนาชื่อลูกค้าไว้แล้ว)`
+          : ''),
+      confirmLabel: 'ลบออกจากฐานข้อมูล',
       danger: true
     });
     if (!ok) return;
 
+    // ลบที่เซิร์ฟเวอร์ให้สำเร็จก่อนเสมอ ถ้าลบแต่ในเครื่องข้อมูลจะกลับมาตอนดึงข้อมูลครั้งถัดไป
+    if (onServer) {
+      try {
+        const result = await apiCall('deleteCustomer', { id }, 'POST');
+        showToast(`ลบออกจากฐานข้อมูลแล้ว — ${result.customerName || customer.name} `
+          + `พร้อมผลตรวจ ${result.deletedExams} รายการ`
+          + (result.keptOrders ? ` (คงใบสั่งไว้ ${result.keptOrders} ใบ)` : ''), 'info');
+      } catch (error) {
+        showToast(`ลบไม่สำเร็จ: ${error.message} — ข้อมูลยังอยู่ครบทั้งในเครื่องและบนเซิร์ฟเวอร์`, 'error');
+        return;
+      }
+    } else {
+      showToast('ลบข้อมูลลูกค้าเรียบร้อยแล้ว', 'info');
+    }
+
     state.customers = state.customers.filter((c) => c.id !== id);
     persist();
     renderAll();
-    showToast('ลบข้อมูลลูกค้าเรียบร้อยแล้ว', 'info');
   }
 
   /* ==========================================================================
@@ -2736,19 +2756,41 @@
   async function deleteProduct(id) {
     const product = state.products.find((p) => p.id === id);
     if (!product) return;
+    const linkedOrders = state.orders.filter((o) => o.frameId === id || o.lensId === id).length;
+    const onServer = backendConfigured();
 
     const ok = await askConfirm({
       title: 'ยืนยันการลบสินค้า',
-      message: `ลบ "${product.name}" ออกจากคลังสินค้าใช่หรือไม่?`,
-      confirmLabel: 'ยืนยันการลบ',
+      message: `ลบ "${product.name}" ออกจาก${onServer ? 'ฐานข้อมูล' : 'คลังในเครื่องนี้'}อย่างถาวรใช่หรือไม่?`
+        + (linkedOrders
+          ? ` — สินค้านี้ถูกอ้างถึงในใบสั่ง ${linkedOrders} ใบ ระบบจะปิดการใช้งานแทนการลบ เพื่อไม่ให้ใบสั่งเดิมเสียข้อมูล`
+          : ' ความเคลื่อนไหวสต็อกของสินค้านี้จะถูกลบไปด้วย'),
+      confirmLabel: linkedOrders ? 'ปิดการใช้งาน' : 'ลบออกจากฐานข้อมูล',
       danger: true
     });
     if (!ok) return;
 
+    if (onServer) {
+      try {
+        const result = await apiCall('deleteProduct', { id }, 'POST');
+        showToast(`ลบออกจากฐานข้อมูลแล้ว — ${product.name}`
+          + (result.deletedStockMoves ? ` (ลบประวัติสต็อก ${result.deletedStockMoves} รายการ)` : ''), 'info');
+      } catch (error) {
+        // เซิร์ฟเวอร์ปิดการใช้งานให้แทนเพราะมีใบสั่งอ้างอยู่ — ถือว่าเป็นผลลัพธ์ที่ยอมรับได้
+        if (/ถูกอ้างถึงในใบสั่ง/.test(error.message)) {
+          showToast(error.message, 'info');
+        } else {
+          showToast(`ลบไม่สำเร็จ: ${error.message} — ข้อมูลยังอยู่ครบ`, 'error');
+          return;
+        }
+      }
+    } else {
+      showToast('ลบสินค้าเรียบร้อยแล้ว', 'info');
+    }
+
     state.products = state.products.filter((p) => p.id !== id);
     persist();
     renderAll();
-    showToast('ลบสินค้าเรียบร้อยแล้ว', 'info');
   }
 
   /* ==========================================================================
@@ -3048,15 +3090,27 @@
     const order = state.orders.find((o) => o.id === orderId);
     if (!order) return;
 
+    const onServer = backendConfigured();
     const ok = await askConfirm({
       title: 'ยืนยันการยกเลิกออเดอร์',
-      message: `ยกเลิกบิลขายหมายเลข ${orderId} ใช่หรือไม่? ระบบจะคืนสต็อกสินค้าที่ตัดไปแล้ว`,
+      message: `ยกเลิกบิลขายหมายเลข ${orderId} ใช่หรือไม่? ระบบจะคืนสต็อกสินค้าที่ตัดไปแล้ว`
+        + (onServer ? ' และลบใบสั่งออกจากฐานข้อมูลอย่างถาวร' : ''),
       confirmLabel: 'ยืนยันการยกเลิก',
       danger: true
     });
     if (!ok) return;
 
-    // คืนสต็อกที่ถูกตัดตอนเปิดบิล
+    // ลบบนเซิร์ฟเวอร์ก่อน (เซิร์ฟเวอร์คืนสต็อกและบันทึก StockMoves ให้เอง)
+    if (onServer) {
+      try {
+        await apiCall('deleteOrder', { id: orderId }, 'POST');
+      } catch (error) {
+        showToast(`ยกเลิกไม่สำเร็จ: ${error.message} — ใบสั่งยังอยู่ในระบบ`, 'error');
+        return;
+      }
+    }
+
+    // คืนสต็อกที่ถูกตัดตอนเปิดบิล (ฝั่งเครื่องให้ตรงกับที่เซิร์ฟเวอร์ทำ)
     const frame = order.frameId ? state.products.find((p) => p.id === order.frameId) : null;
     const lens = order.lensId ? state.products.find((p) => p.id === order.lensId) : null;
     if (frame) frame.stock += 1;
@@ -3065,7 +3119,9 @@
     state.orders = state.orders.filter((o) => o.id !== orderId);
     persist();
     renderAll();
-    showToast('ยกเลิกออเดอร์และคืนสต็อกเรียบร้อยแล้ว', 'info');
+    showToast(onServer
+      ? 'ยกเลิกออเดอร์ ลบออกจากฐานข้อมูล และคืนสต็อกเรียบร้อยแล้ว'
+      : 'ยกเลิกออเดอร์และคืนสต็อกเรียบร้อยแล้ว', 'info');
   }
 
   /* ==========================================================================
