@@ -905,8 +905,10 @@
     lastConsultation: null,
     /** mode: 'local' | 'sheet' | 'api' — ต้องตรงกับตัวเลือกในหน้าตั้งค่า */
     backend: { mode: 'local', url: '', token: '' },
-    /** เซสชันที่ได้จากการล็อกอิน Google — token เก็บใน sessionStorage ไม่ใช่ localStorage */
-    session: { token: '', user: null, permissions: [] }
+    /** เซสชันที่ได้จากการล็อกอิน — token เก็บใน sessionStorage ไม่ใช่ localStorage */
+    session: { token: '', user: null, permissions: [] },
+    /** ความยาวรหัสผ่านขั้นต่ำที่เซิร์ฟเวอร์กำหนด (อัปเดตจาก authStatus) */
+    minPasswordLength: 8
   };
 
   /** ตรวจสิทธิ์ฝั่งหน้าเว็บเพื่อซ่อนปุ่มเท่านั้น — ด่านจริงอยู่ที่เซิร์ฟเวอร์ */
@@ -977,14 +979,28 @@
       loginScreen: $('#login-screen'),
       loginError: $('#login-error'),
       loginChecking: $('#login-checking'),
-      loginGoogle: $('#login-google'),
+      loginFormPanel: $('#login-form-panel'),
+      loginForm: $('#login-form'),
+      loginUsername: $('#login-username'),
+      loginPassword: $('#login-password'),
+      loginSubmit: $('#login-submit'),
+      loginChangePassword: $('#login-change-password'),
+      changePasswordForm: $('#change-password-form'),
+      changePasswordHint: $('#change-password-hint'),
+      changePasswordError: $('#change-password-error'),
+      currentPassword: $('#current-password'),
+      newPassword: $('#new-password'),
+      confirmPassword: $('#confirm-password'),
+      loginFootnote: $('#login-footnote'),
+      loginSubtitle: $('#login-subtitle'),
       loginSetup: $('#login-setup'),
+      loginSetupTitle: $('#login-setup-title'),
       loginSetupDetail: $('#login-setup-detail'),
-      googleButton: $('#google-signin-button'),
       sessionName: $('#session-name'),
       sessionRole: $('#session-role'),
       sessionAvatar: $('#session-avatar'),
       manageUsersBtn: $('#btn-manage-users'),
+      changePasswordBtn: $('#btn-change-password'),
       usersList: $('#users-list'),
       userForm: $('#user-form'),
 
@@ -1071,6 +1087,8 @@
       examModeWrap: $('#exam-mode-wrap'),
 
       syncReportBody: $('#sync-report-body'),
+      syncReportTitle: $('#sync-report-title-text'),
+      syncReportSubtitle: $('#sync-report-subtitle'),
       backendModeText: $('#backend-mode-text'),
       backendApiActions: $('#backend-api-actions'),
       backendSheetActions: $('#backend-sheet-actions'),
@@ -1181,7 +1199,7 @@
   }
 
   /** กล่องยืนยันแบบ Promise — คืน true เมื่อผู้ใช้กดยืนยัน */
-  function askConfirm({ title, message, confirmLabel = 'ยืนยัน', danger = false }) {
+  function askConfirm({ title, message, confirmLabel = 'ยืนยัน', danger = false, icon = '' }) {
     return new Promise((resolve) => {
       const modal = els.confirmModal;
       els.confirmTitle.textContent = title;
@@ -1193,9 +1211,8 @@
       els.confirmIcon.className = danger
         ? 'inline-flex items-center justify-center w-12 h-12 rounded-full bg-rose-100 text-rose-600 mt-2'
         : 'inline-flex items-center justify-center w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 mt-2';
-      els.confirmIcon.innerHTML = danger
-        ? '<i class="fa-solid fa-trash-can text-xl" aria-hidden="true"></i>'
-        : '<i class="fa-solid fa-floppy-disk text-xl" aria-hidden="true"></i>';
+      const iconName = icon || (danger ? 'fa-trash-can' : 'fa-floppy-disk');
+      els.confirmIcon.innerHTML = `<i class="fa-solid ${iconName} text-xl" aria-hidden="true"></i>`;
 
       let settled = false;
       const settle = (value) => {
@@ -1215,11 +1232,11 @@
   }
 
   /* ==========================================================================
-   * 8. AUTHENTICATION — ล็อกอินด้วยบัญชี Google จริง
+   * 8. AUTHENTICATION — ล็อกอินด้วยบัญชีผู้ใช้และรหัสผ่าน
    *
    * หน้าเว็บไม่ได้ตัดสินสิทธิ์เอง หน้าที่ของมันคือ
-   *   1) ขอ ID token จาก Google Identity Services
-   *   2) ส่งให้เซิร์ฟเวอร์ตรวจและแลกเป็น session token
+   *   1) ส่งชื่อผู้ใช้กับรหัสผ่านไปให้เซิร์ฟเวอร์ตรวจ (POST เท่านั้น)
+   *   2) เก็บ session token ที่ได้กลับมาไว้ใน sessionStorage
    *   3) แนบ session token ไปกับทุกคำขอ
    * การตรวจสิทธิ์จริงเกิดที่ Code.gs ทุกครั้ง การซ่อนปุ่มเป็นเพียงเรื่องประสบการณ์ใช้งาน
    * ========================================================================== */
@@ -1236,15 +1253,27 @@
     }
   }
 
+  /** สลับแผงบนหน้าล็อกอิน: 'checking' | 'formPanel' | 'changePassword' | 'setup' */
   function showLoginPanel(name) {
-    ['checking', 'google', 'setup'].forEach((key) => {
-      els[`login${key.charAt(0).toUpperCase()}${key.slice(1)}`].classList.toggle('hidden', key !== name);
+    const panels = {
+      checking: els.loginChecking,
+      formPanel: els.loginFormPanel,
+      changePassword: els.loginChangePassword,
+      setup: els.loginSetup
+    };
+    Object.keys(panels).forEach((key) => {
+      panels[key].classList.toggle('hidden', key !== name);
     });
   }
 
   function showLoginError(message) {
     els.loginError.textContent = message;
     els.loginError.classList.toggle('hidden', !message);
+  }
+
+  function showChangePasswordError(message) {
+    els.changePasswordError.textContent = message;
+    els.changePasswordError.classList.toggle('hidden', !message);
   }
 
   function saveSession(session) {
@@ -1287,11 +1316,10 @@
     };
 
     if (user) {
-      els.sessionName.textContent = user.displayName || user.email;
-      els.sessionRole.textContent = `${roleLabels[user.role] || user.role} · ${user.email}`;
-      els.sessionAvatar.innerHTML = user.picture
-        ? html`<img src="${user.picture}" alt="" class="h-full w-full object-cover" referrerpolicy="no-referrer">`
-        : html`${(user.displayName || user.email).trim().charAt(0).toUpperCase()}`;
+      const label = user.displayName || user.username;
+      els.sessionName.textContent = label;
+      els.sessionRole.textContent = `${roleLabels[user.role] || user.role} · ${user.username}`;
+      els.sessionAvatar.innerHTML = html`${String(label).trim().charAt(0).toUpperCase()}`;
     } else {
       els.sessionName.textContent = state.backend.mode === 'api' ? '—' : 'โหมดออฟไลน์';
       els.sessionRole.textContent = state.backend.mode === 'api' ? 'ยังไม่ได้เข้าสู่ระบบ' : 'ข้อมูลเก็บในเครื่อง';
@@ -1301,11 +1329,17 @@
     els.manageUsersBtn.classList.toggle('hidden', !can('listUsers'));
     els.manageUsersBtn.classList.toggle('flex', can('listUsers'));
 
+    // ปุ่มเปลี่ยนรหัสผ่านแสดงเฉพาะตอนล็อกอินกับเซิร์ฟเวอร์จริง (โหมดออฟไลน์ไม่มีบัญชี)
+    const canChangePassword = Boolean(user) && state.backend.mode === 'api';
+    els.changePasswordBtn.classList.toggle('hidden', !canChangePassword);
+    els.changePasswordBtn.classList.toggle('flex', canChangePassword);
+
     // ซ่อนปุ่มที่บทบาทนี้ใช้ไม่ได้ (เซิร์ฟเวอร์ยังปฏิเสธซ้ำอีกชั้นเสมอ)
     const guarded = [
       ['new-customer', 'saveCustomer'], ['quick-new-customer', 'saveCustomer'],
       ['new-product', 'saveProduct'], ['new-order', 'createOrder'], ['quick-new-order', 'createOrder'],
-      ['backend-push', 'saveCustomer'], ['backend-diagnose', 'diagnose'], ['reset-data', 'bootstrap']
+      ['backend-push', 'saveCustomer'], ['backend-diagnose', 'diagnose'], ['reset-data', 'bootstrap'],
+      ['backend-repair', 'repairDatabase']
     ];
     guarded.forEach(([action, permission]) => {
       $$(`[data-action="${action}"]`).forEach((button) => {
@@ -1344,62 +1378,133 @@
 
     try {
       const status = await apiCall('authStatus');
+      state.minPasswordLength = status.minPasswordLength || 8;
+
+      // เซิร์ฟเวอร์พร้อม แต่ยังไม่มีบัญชีที่ตั้งรหัสผ่านไว้เลย
       if (!status.ready) {
+        els.loginSubtitle.textContent = 'ยังไม่มีบัญชีผู้ใช้ในระบบ';
+        els.loginSetupTitle.textContent = 'ผู้ดูแลต้องสร้างบัญชีแรกก่อน';
         els.loginSetupDetail.textContent =
-          'เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า Google Client ID — เปิดสเปรดชีตแล้วใช้เมนู OptiCare › ตั้งค่า Google Client ID ก่อน';
+          'เปิดไฟล์ Google Sheets ของร้าน แล้วใช้เมนู OptiCare › สร้างบัญชีผู้ดูแลคนแรก '
+          + 'ระบบจะให้ตั้งชื่อผู้ใช้และสุ่มรหัสผ่านชั่วคราวมาให้ จากนั้นกลับมาเข้าสู่ระบบที่หน้านี้';
         showLoginPanel('setup');
         return;
       }
-      showLoginPanel('google');
-      showLoginError(status.firstRun
-        ? '' : '');
-      if (status.firstRun) {
-        els.loginError.classList.remove('hidden');
-        els.loginError.className = 'text-blue-800 text-xs font-medium bg-blue-50 border border-blue-200 rounded-lg p-3 leading-relaxed';
-        els.loginError.textContent = 'ยังไม่มีผู้ใช้ในระบบ — บัญชี Google แรกที่ล็อกอินจะถูกตั้งเป็นเจ้าของร้าน (owner) อัตโนมัติ';
-      }
-      renderGoogleButton(status.clientId);
+
+      els.loginSubtitle.textContent = 'เข้าสู่ระบบด้วยบัญชีที่ผู้ดูแลสร้างให้';
+      els.loginFootnote.textContent =
+        'ผู้ดูแลระบบเป็นผู้สร้างบัญชีและกำหนดสิทธิ์ การตรวจสอบสิทธิ์ทั้งหมดทำที่ฝั่งเซิร์ฟเวอร์เสมอ';
+      showLoginError('');
+      showLoginPanel('formPanel');
+      els.loginPassword.value = '';
+      els.loginUsername.focus();
     } catch (error) {
+      els.loginSubtitle.textContent = 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้';
+      els.loginSetupTitle.textContent = 'ยังไม่ได้เชื่อมต่อเซิร์ฟเวอร์';
       els.loginSetupDetail.textContent = `เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ: ${error.message}`;
       showLoginPanel('setup');
     }
   }
 
-  /** สร้างปุ่ม Sign in with Google */
-  function renderGoogleButton(clientId) {
-    if (!window.google || !google.accounts || !google.accounts.id) {
-      // สคริปต์ GIS ยังโหลดไม่เสร็จ หรือโหลดไม่ได้ (เช่นเปิดจาก file://)
-      showLoginError('โหลดระบบล็อกอินของ Google ไม่สำเร็จ — ต้องเปิดหน้าเว็บผ่าน https และตั้งค่า Authorized JavaScript origins ให้ตรงกับโดเมนนี้');
+  /** เข้าสู่ระบบด้วยชื่อผู้ใช้และรหัสผ่าน */
+  async function submitLogin(event) {
+    if (event) event.preventDefault();
+
+    const username = els.loginUsername.value.trim();
+    const password = els.loginPassword.value;
+    if (!username || !password) {
+      showLoginError('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน');
+      (username ? els.loginPassword : els.loginUsername).focus();
       return;
     }
 
-    google.accounts.id.initialize({
-      client_id: clientId,
-      callback: handleGoogleCredential,
-      auto_select: false,
-      cancel_on_tap_outside: true
-    });
-    google.accounts.id.renderButton(els.googleButton, {
-      theme: 'outline', size: 'large', text: 'signin_with',
-      shape: 'pill', locale: 'th', width: 280
-    });
-  }
+    showLoginError('');
+    els.loginSubmit.disabled = true;
 
-  /** Google ส่ง ID token กลับมา — แลกเป็น session token กับเซิร์ฟเวอร์ */
-  async function handleGoogleCredential(response) {
-    showLoginPanel('checking');
     try {
-      const session = await apiCall('login', { idToken: response.credential }, 'POST');
+      const session = await apiCall('login', { username, password }, 'POST');
+      els.loginPassword.value = '';
       saveSession(session);
+
+      // บัญชีใหม่หรือบัญชีที่ผู้ดูแลเพิ่งรีเซ็ตรหัส ต้องตั้งรหัสใหม่ก่อนใช้งาน
+      if (session.mustChangePassword) {
+        promptPasswordChange(password);
+        return;
+      }
+
       setLocked(false);
       renderSession();
-      showToast(`ยินดีต้อนรับ ${session.user.displayName || session.user.email}`);
+      showToast(`ยินดีต้อนรับ ${session.user.displayName || session.user.username}`);
       await backendPull();
     } catch (error) {
-      showLoginPanel('google');
-      els.loginError.className = 'text-rose-600 text-xs font-medium bg-rose-50 border border-rose-200 rounded-lg p-3 leading-relaxed';
       showLoginError(error.message);
+      els.loginPassword.value = '';
+      els.loginPassword.focus();
+    } finally {
+      els.loginSubmit.disabled = false;
     }
+  }
+
+  /** เปิดแผงบังคับตั้งรหัสผ่านใหม่ (เติมรหัสเดิมให้อัตโนมัติถ้าเพิ่งกรอกมา) */
+  function promptPasswordChange(currentPassword) {
+    els.changePasswordHint.textContent =
+      `รหัสผ่านต้องยาวอย่างน้อย ${state.minPasswordLength} ตัวอักษร และมีทั้งตัวอักษรและตัวเลข`;
+    els.currentPassword.value = currentPassword || '';
+    els.newPassword.value = '';
+    els.confirmPassword.value = '';
+    showChangePasswordError('');
+    setLocked(true);
+    showLoginPanel('changePassword');
+    els.newPassword.focus();
+  }
+
+  async function submitPasswordChange(event) {
+    event.preventDefault();
+
+    const currentPassword = els.currentPassword.value;
+    const newPassword = els.newPassword.value;
+    if (newPassword !== els.confirmPassword.value) {
+      showChangePasswordError('รหัสผ่านใหม่กับการยืนยันไม่ตรงกัน');
+      els.confirmPassword.focus();
+      return;
+    }
+    if (newPassword.length < state.minPasswordLength) {
+      showChangePasswordError(`รหัสผ่านต้องยาวอย่างน้อย ${state.minPasswordLength} ตัวอักษร`);
+      els.newPassword.focus();
+      return;
+    }
+
+    showChangePasswordError('');
+    try {
+      await apiCall('changePassword', { currentPassword, newPassword }, 'POST');
+
+      // เซิร์ฟเวอร์ไม่คืน token ใหม่ — token เดิมยังใช้ได้ แค่ต้องอ่านสิทธิ์ใหม่
+      const me = await apiCall('me');
+      state.session.user = me.user;
+      state.session.permissions = me.permissions;
+      saveSession({ sessionToken: state.session.token, user: me.user, permissions: me.permissions });
+
+      els.currentPassword.value = '';
+      els.newPassword.value = '';
+      els.confirmPassword.value = '';
+
+      setLocked(false);
+      renderSession();
+      showToast('ตั้งรหัสผ่านใหม่เรียบร้อย');
+      await backendPull();
+    } catch (error) {
+      showChangePasswordError(error.message);
+    }
+  }
+
+  /** ผู้ใช้ที่ล็อกอินอยู่กดเปลี่ยนรหัสผ่านเอง */
+  function openPasswordChange() {
+    if (!state.session.token) {
+      showToast('ต้องเข้าสู่ระบบก่อนจึงจะเปลี่ยนรหัสผ่านได้', 'error');
+      return;
+    }
+    promptPasswordChange('');
+    els.currentPassword.focus();
   }
 
   async function handleLogout() {
@@ -1413,9 +1518,6 @@
     if (!ok) return;
 
     clearSession();
-    if (window.google && google.accounts && google.accounts.id) {
-      google.accounts.id.disableAutoSelect();
-    }
     renderSession();
     showToast('ออกจากระบบเรียบร้อยแล้ว', 'info');
     await initAuth();
@@ -3409,8 +3511,18 @@
     return letter;
   }
 
+  /** หน้าต่างรายงานนี้ใช้ร่วมกันหลายงาน จึงต้องเปลี่ยนหัวเรื่องให้ตรงกับงานที่กำลังแสดง */
+  function setSyncReportHeading(title, subtitle) {
+    els.syncReportTitle.textContent = title;
+    els.syncReportSubtitle.textContent = subtitle;
+  }
+
   async function openSyncReport() {
     const modal = $('#modal-sync-report');
+    setSyncReportHeading(
+      'รายงานการเชื่อมต่อ Google Sheets',
+      'ตรวจว่าดึงข้อมูลได้จริง คอลัมน์จับคู่ถูกต้องหรือไม่ และข้อมูลในชีตมีจุดใดต้องแก้ก่อนนำเข้า'
+    );
     els.syncReportBody.innerHTML = html`
       <div class="py-12 text-center text-gray-500">
         <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600 mx-auto mb-3" aria-hidden="true"></div>
@@ -3518,6 +3630,10 @@
         setLocked(true);
         showLoginPanel('checking');
         initAuth();
+      }
+      // บัญชีที่ยังไม่ได้ตั้งรหัสผ่านของตัวเอง — บังคับให้ตั้งก่อนจึงใช้งานต่อได้
+      if (payload.mustChangePassword && state.session.token) {
+        promptPasswordChange('');
       }
       throw new Error(payload.error || 'เซิร์ฟเวอร์ปฏิเสธคำขอ');
     }
@@ -3762,6 +3878,10 @@
   /** เรียก diagnose ของฝั่งเซิร์ฟเวอร์แล้วแสดงผลในหน้าต่างรายงาน */
   async function backendDiagnose() {
     const modal = $('#modal-sync-report');
+    setSyncReportHeading(
+      'ตรวจสุขภาพฐานข้อมูล',
+      'ตรวจการเชื่อมต่อ สิทธิ์เข้าถึงไฟล์ โครงสร้างตาราง และการตั้งค่าระบบเข้าสู่ระบบ'
+    );
     els.syncReportBody.innerHTML = html`
       <div class="py-12 text-center text-gray-500">
         <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600 mx-auto mb-3" aria-hidden="true"></div>
@@ -3803,6 +3923,195 @@
     }
   }
 
+  /* ---------- ซ่อมบำรุงฐานข้อมูล ---------- */
+
+  const SHEET_STATE = {
+    ok: { label: 'ถูกต้อง', icon: 'fa-circle-check', cls: 'text-emerald-600', row: 'bg-emerald-50 border-emerald-200' },
+    missing: { label: 'ไม่พบชีตนี้', icon: 'fa-circle-xmark', cls: 'text-rose-600', row: 'bg-rose-50 border-rose-200' },
+    noHeader: { label: 'ไม่มีหัวตาราง', icon: 'fa-circle-exclamation', cls: 'text-rose-600', row: 'bg-rose-50 border-rose-200' },
+    legacy: { label: 'โครงสร้างเดิม ต้องย้ายข้อมูล', icon: 'fa-triangle-exclamation', cls: 'text-amber-600', row: 'bg-amber-50 border-amber-200' },
+    mismatch: { label: 'ลำดับคอลัมน์ไม่ตรง', icon: 'fa-triangle-exclamation', cls: 'text-amber-600', row: 'bg-amber-50 border-amber-200' }
+  };
+
+  /** แถวสรุปสภาพของชีตหนึ่งในรายงานซ่อมบำรุง */
+  function repairSheetRow(sheet) {
+    const style = SHEET_STATE[sheet.state] || SHEET_STATE.mismatch;
+    return html`
+      <div class="border rounded-lg px-3 py-2 ${raw(style.row)}">
+        <div class="flex items-start justify-between gap-2">
+          <p class="text-xs font-semibold text-gray-800 flex items-start gap-2 min-w-0">
+            <i class="fa-solid ${raw(style.icon)} ${raw(style.cls)} mt-0.5" aria-hidden="true"></i>
+            <span class="font-mono">${sheet.sheet}</span>
+            <span class="font-normal text-gray-600 truncate">${style.label}</span>
+          </p>
+          <p class="text-2xs text-gray-500 whitespace-nowrap">
+            ${sheet.columns}/${sheet.expectedColumns} คอลัมน์ · ${sheet.dataRows} แถว
+          </p>
+        </div>
+        ${sheet.droppedColumns && sheet.droppedColumns.length
+          ? raw(html`<p class="text-2xs text-rose-700 mt-1 pl-5">คอลัมน์ที่จะถูกทิ้ง: ${sheet.droppedColumns.join(', ')}</p>`)
+          : ''}
+      </div>`;
+  }
+
+  /** รายงานซ่อมบำรุง ใช้ได้ทั้งตอนดูแผน (dryRun) และตอนซ่อมเสร็จ */
+  function renderRepairReport(report, { heading, tone }) {
+    const toneClass = {
+      ok: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+      warn: 'bg-amber-50 border-amber-200 text-amber-900',
+      fail: 'bg-rose-50 border-rose-200 text-rose-800'
+    }[tone];
+
+    const todo = (report.actions || []).filter((action) => !action.done);
+    const done = (report.actions || []).filter((action) => action.done);
+    // ซ่อมเสร็จแล้วต้องแสดงสภาพ "หลังซ่อม" ไม่ใช่สภาพก่อนซ่อมที่ใช้วางแผน
+    const sheets = report.sheetsAfter || report.sheets || [];
+
+    setSyncReportHeading(
+      report.dryRun ? 'ตรวจสภาพฐานข้อมูล' : 'ผลการซ่อมบำรุงฐานข้อมูล',
+      report.dryRun
+        ? 'เทียบโครงสร้างจริงในชีตกับมาตรฐานของระบบ แล้วบอกว่าจะซ่อมอะไรบ้างก่อนลงมือ'
+        : 'สภาพของทุกชีตหลังซ่อม พร้อมรายการสิ่งที่ระบบทำไปและชีตสำรองที่เก็บไว้'
+    );
+
+    els.syncReportBody.innerHTML = html`
+      <div class="border rounded-xl p-4 ${raw(toneClass)}">
+        <p class="font-bold text-sm">${heading}</p>
+        <p class="text-2xs mt-1 opacity-80">
+          ${report.summary || ''} · ตรวจเมื่อ ${String(report.checkedAt || '').replace('T', ' ')}
+        </p>
+      </div>
+
+      <div class="space-y-1.5">
+        <p class="text-2xs font-semibold text-gray-500 uppercase tracking-wide">
+          ${report.dryRun ? 'สภาพปัจจุบัน' : 'สภาพหลังซ่อม'}
+        </p>
+        ${sheets.map((sheet) => raw(repairSheetRow(sheet)))}
+      </div>
+
+      ${todo.length ? raw(html`
+        <div class="border border-blue-200 bg-blue-50 rounded-xl p-3">
+          <p class="text-xs font-bold text-blue-900 mb-1.5">สิ่งที่ระบบจะทำเมื่อกดซ่อม</p>
+          <ul class="space-y-1">
+            ${todo.map((action) => raw(html`
+              <li class="text-2xs text-blue-900 leading-relaxed">
+                <span class="font-mono font-semibold">${action.sheet}</span> — ${action.action}
+              </li>`))}
+          </ul>
+        </div>`) : ''}
+
+      ${done.length ? raw(html`
+        <div class="border border-emerald-200 bg-emerald-50 rounded-xl p-3">
+          <p class="text-xs font-bold text-emerald-900 mb-1.5">สิ่งที่ทำไปแล้ว</p>
+          <ul class="space-y-1">
+            ${done.map((action) => raw(html`
+              <li class="text-2xs text-emerald-900 leading-relaxed">
+                <span class="font-mono font-semibold">${action.sheet}</span> — ${action.action}
+              </li>`))}
+          </ul>
+        </div>`) : ''}
+
+      ${(report.backups || []).length ? raw(html`
+        <div class="border border-gray-200 bg-gray-50 rounded-xl p-3">
+          <p class="text-xs font-bold text-gray-800 mb-1">ชีตสำรองที่สร้างไว้ (ข้อมูลเดิมไม่ถูกลบ)</p>
+          <ul class="space-y-0.5">
+            ${report.backups.map((name) => raw(html`<li class="text-2xs font-mono text-gray-600">${name}</li>`))}
+          </ul>
+        </div>`) : ''}
+
+      ${(report.warnings || []).length ? raw(html`
+        <div class="border border-amber-200 bg-amber-50 rounded-xl p-3">
+          <p class="text-xs font-bold text-amber-900 mb-1">ข้อควรทราบ</p>
+          <ul class="space-y-1 list-disc list-inside">
+            ${report.warnings.map((warning) => raw(html`<li class="text-2xs text-amber-900 leading-relaxed">${warning}</li>`))}
+          </ul>
+        </div>`) : ''}`;
+  }
+
+  /**
+   * ปุ่มซ่อมบำรุงฐานข้อมูล
+   * ขั้นที่ 1 ตรวจสภาพและแสดงแผน (ไม่แตะไฟล์) → ขั้นที่ 2 ถามยืนยัน → ขั้นที่ 3 ซ่อมจริง
+   */
+  async function backendRepair() {
+    if (!backendConfigured()) {
+      showToast('ต้องเชื่อมต่อโหมด Apps Script API และเข้าสู่ระบบก่อนจึงจะซ่อมฐานข้อมูลได้', 'error');
+      return;
+    }
+
+    const modal = $('#modal-sync-report');
+    setSyncReportHeading(
+      'ตรวจสภาพฐานข้อมูล',
+      'เทียบโครงสร้างจริงในชีตกับมาตรฐานของระบบ แล้วบอกว่าจะซ่อมอะไรบ้างก่อนลงมือ'
+    );
+    els.syncReportBody.innerHTML = html`
+      <div class="py-12 text-center text-gray-500">
+        <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-amber-500 mx-auto mb-3" aria-hidden="true"></div>
+        <p class="text-sm font-medium">กำลังตรวจสภาพโครงสร้างฐานข้อมูล…</p>
+      </div>`;
+    openModal(modal);
+
+    let preview;
+    try {
+      preview = await apiCall('repairPreview');
+    } catch (error) {
+      els.syncReportBody.innerHTML = html`
+        <div class="border border-rose-200 bg-rose-50 rounded-xl p-4 text-sm text-rose-800">
+          <p class="font-bold">ตรวจสภาพฐานข้อมูลไม่สำเร็จ</p>
+          <p class="text-2xs mt-1">${error.message}</p>
+        </div>`;
+      return;
+    }
+
+    if (!preview.needsRepair) {
+      renderRepairReport(preview, { heading: 'โครงสร้างทุกชีตตรงกับมาตรฐานอยู่แล้ว ไม่ต้องซ่อม', tone: 'ok' });
+      return;
+    }
+
+    renderRepairReport(preview, {
+      heading: `พบ ${preview.actions.length} ชีตที่ต้องซ่อม (ยังไม่ได้แก้ไขอะไร)`,
+      tone: 'warn'
+    });
+
+    const dropped = (preview.sheets || []).some((sheet) => (sheet.droppedColumns || []).length);
+    const ok = await askConfirm({
+      title: 'ซ่อมบำรุงฐานข้อมูล',
+      message: `จะจัดเรียงคอลัมน์ของ ${preview.actions.length} ชีตให้ตรงกับมาตรฐาน `
+        + 'โดยย้ายข้อมูลตามชื่อคอลัมน์ ชีตที่ต้องเปลี่ยนโครงสร้างจะถูกสำรองไว้ก่อนเสมอ'
+        + (dropped ? ' — มีคอลัมน์ที่ไม่อยู่ในมาตรฐานและจะหายไป ดูรายละเอียดในรายงานด้านหลัง' : '')
+        + ' แนะนำให้สำรองไฟล์ Google Sheets ก่อนดำเนินการ',
+      confirmLabel: 'ซ่อมเลย',
+      danger: true,
+      icon: 'fa-screwdriver-wrench'
+    });
+    if (!ok) return;
+
+    els.syncReportBody.innerHTML = html`
+      <div class="py-12 text-center text-gray-500">
+        <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-amber-500 mx-auto mb-3" aria-hidden="true"></div>
+        <p class="text-sm font-medium">กำลังซ่อมบำรุงฐานข้อมูล…</p>
+        <p class="text-2xs mt-1">ขั้นตอนนี้อาจใช้เวลาสักครู่ อย่าปิดหน้าต่าง</p>
+      </div>`;
+
+    try {
+      const result = await apiCall('repairDatabase', {}, 'POST');
+      renderRepairReport(result, {
+        heading: result.verified ? 'ซ่อมเสร็จแล้ว โครงสร้างทุกชีตตรงกับมาตรฐาน' : 'ซ่อมแล้วแต่ยังมีชีตที่ไม่ผ่านการตรวจซ้ำ',
+        tone: result.verified ? 'ok' : 'fail'
+      });
+      showToast(result.verified ? 'ซ่อมบำรุงฐานข้อมูลเรียบร้อย' : 'ซ่อมแล้วแต่ยังมีบางชีตไม่ผ่าน',
+        result.verified ? 'success' : 'error');
+      if (result.verified) await backendPull();
+    } catch (error) {
+      els.syncReportBody.innerHTML = html`
+        <div class="border border-rose-200 bg-rose-50 rounded-xl p-4 text-sm text-rose-800">
+          <p class="font-bold">ซ่อมไม่สำเร็จ</p>
+          <p class="text-2xs mt-1">${error.message}</p>
+          <p class="text-2xs mt-2">ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง หรือใช้เมนู OptiCare › ซ่อมบำรุงฐานข้อมูล ในสเปรดชีตแทน</p>
+        </div>`;
+      showToast(`ซ่อมไม่สำเร็จ: ${error.message}`, 'error');
+    }
+  }
+
   /* ---------- จัดการผู้ใช้ระบบ ---------- */
 
   const ROLE_LABEL = {
@@ -3815,9 +4124,31 @@
     viewer: 'bg-gray-100 text-gray-600'
   };
 
-  async function openUsersModal() {
+  /** รหัสผ่านสุ่มที่อ่านออกง่าย — ไม่มี 0/O/1/l/I ที่มักอ่านผิดตอนจดใส่กระดาษ */
+  function suggestPassword() {
+    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz';
+    const digits = '23456789';
+    const pick = (pool, count) => Array.from(
+      { length: count },
+      () => pool.charAt(Math.floor(Math.random() * pool.length))
+    ).join('');
+    return pick(letters, 8) + pick(digits, 3);
+  }
+
+  function resetUserForm() {
     els.userForm.reset();
     $('#user-id').value = '';
+    $('#user-password').type = 'password';
+    $('#user-password-label').textContent = '(บัญชีใหม่ต้องตั้ง)';
+    const toggle = $('[data-action="toggle-password"][data-target="user-password"]');
+    if (toggle) {
+      toggle.setAttribute('aria-pressed', 'false');
+      toggle.querySelector('i').className = 'fa-solid fa-eye text-xs';
+    }
+  }
+
+  async function openUsersModal() {
+    resetUserForm();
     els.usersList.innerHTML = html`<p class="text-xs text-gray-400 py-4 text-center">กำลังโหลดรายชื่อผู้ใช้…</p>`;
     openModal($('#modal-users'));
 
@@ -3831,7 +4162,7 @@
   }
 
   function renderUsersList(users) {
-    const me = state.session.user ? state.session.user.email : '';
+    const me = state.session.user ? state.session.user.username : '';
     if (!users.length) {
       els.usersList.innerHTML = html`<p class="text-xs text-gray-400 py-4 text-center">ยังไม่มีผู้ใช้ในระบบ</p>`;
       return;
@@ -3841,13 +4172,15 @@
       <div class="flex items-center justify-between gap-2 border rounded-lg px-3 py-2 ${raw(user.active === false ? 'opacity-60 bg-gray-50' : '')}">
         <div class="min-w-0">
           <p class="text-xs font-semibold text-gray-800 truncate">
-            ${user.displayName || user.email}
-            ${user.email === me ? raw('<span class="text-2xs text-blue-600 font-normal">(คุณ)</span>') : ''}
+            ${user.displayName || user.username}
+            ${user.username === me ? raw('<span class="text-2xs text-blue-600 font-normal">(คุณ)</span>') : ''}
           </p>
-          <p class="text-2xs text-gray-500 truncate">${user.email}</p>
-          ${user.lastLoginAt
-            ? raw(html`<p class="text-2xs text-gray-400">เข้าใช้ล่าสุด ${String(user.lastLoginAt).replace('T', ' ').slice(0, 16)}</p>`)
-            : raw('<p class="text-2xs text-gray-400">ยังไม่เคยเข้าใช้งาน</p>')}
+          <p class="text-2xs text-gray-500 truncate font-mono">${user.username}</p>
+          ${user.mustChangePassword
+            ? raw(html`<p class="text-2xs text-amber-700">ยังไม่ได้ตั้งรหัสผ่านของตัวเอง</p>`)
+            : user.lastLoginAt
+              ? raw(html`<p class="text-2xs text-gray-400">เข้าใช้ล่าสุด ${String(user.lastLoginAt).replace('T', ' ').slice(0, 16)}</p>`)
+              : raw('<p class="text-2xs text-gray-400">ยังไม่เคยเข้าใช้งาน</p>')}
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
           <span class="px-2 py-0.5 rounded text-2xs font-semibold ${raw(ROLE_STYLE[user.role] || 'bg-gray-100 text-gray-600')}">
@@ -3856,15 +4189,16 @@
           ${user.active === false
             ? raw(html`<span class="px-2 py-0.5 rounded text-2xs font-semibold bg-rose-100 text-rose-700">ปิดใช้งาน</span>`)
             : ''}
-          ${can('saveUser') && user.email !== me
+          ${can('saveUser') && user.username !== me
             ? raw(html`
-                <button type="button" data-action="edit-user" data-id="${user.id}" data-email="${user.email}"
-                        data-role="${user.role}" data-note="${user.note || ''}"
-                        class="p-1.5 text-blue-600 hover:bg-blue-50 rounded" aria-label="แก้ไข ${user.email}">
+                <button type="button" data-action="edit-user" data-id="${user.id}" data-username="${user.username}"
+                        data-display="${user.displayName || ''}" data-role="${user.role}"
+                        data-email="${user.email || ''}" data-note="${user.note || ''}"
+                        class="p-1.5 text-blue-600 hover:bg-blue-50 rounded" aria-label="แก้ไข ${user.username}">
                   <i class="fa-solid fa-pen text-2xs" aria-hidden="true"></i>
                 </button>
-                <button type="button" data-action="disable-user" data-id="${user.id}" data-email="${user.email}"
-                        class="p-1.5 text-rose-600 hover:bg-rose-50 rounded" aria-label="ปิดใช้งาน ${user.email}">
+                <button type="button" data-action="disable-user" data-id="${user.id}" data-username="${user.username}"
+                        class="p-1.5 text-rose-600 hover:bg-rose-50 rounded" aria-label="ปิดใช้งาน ${user.username}">
                   <i class="fa-solid fa-ban text-2xs" aria-hidden="true"></i>
                 </button>`)
             : ''}
@@ -3876,29 +4210,40 @@
     event.preventDefault();
     if (!els.userForm.reportValidity()) return;
 
+    const isNew = !$('#user-id').value;
+    const password = $('#user-password').value;
+    if (isNew && !password) {
+      showToast('บัญชีใหม่ต้องตั้งรหัสผ่านเริ่มต้น — กดปุ่มสุ่มรหัสผ่านได้', 'error');
+      $('#user-password').focus();
+      return;
+    }
+
     const record = {
       id: $('#user-id').value || undefined,
-      email: $('#user-email').value.trim().toLowerCase(),
+      username: $('#user-username').value.trim().toLowerCase(),
+      displayName: $('#user-display').value.trim(),
       role: $('#user-role').value,
+      email: $('#user-email').value.trim().toLowerCase(),
       note: $('#user-note').value.trim(),
       active: true
     };
 
     try {
-      await apiCall('saveUser', { record }, 'POST');
-      showToast(`บันทึกสิทธิ์ของ ${record.email} เรียบร้อย`);
-      els.userForm.reset();
-      $('#user-id').value = '';
+      await apiCall('saveUser', { record, password }, 'POST');
+      showToast(password
+        ? `บันทึก ${record.username} แล้ว — แจ้งรหัสผ่านให้เจ้าตัว ระบบจะบังคับให้ตั้งรหัสใหม่ตอนเข้าครั้งแรก`
+        : `บันทึกสิทธิ์ของ ${record.username} เรียบร้อย`);
+      resetUserForm();
       renderUsersList(await apiCall('listUsers'));
     } catch (error) {
       showToast(`บันทึกไม่สำเร็จ: ${error.message}`, 'error');
     }
   }
 
-  async function disableUser(id, email) {
+  async function disableUser(id, username) {
     const ok = await askConfirm({
       title: 'ปิดใช้งานบัญชี',
-      message: `ปิดใช้งาน ${email} ใช่หรือไม่? ผู้ใช้จะเข้าระบบไม่ได้ทันที แต่ประวัติการทำงานยังอยู่ครบ`,
+      message: `ปิดใช้งาน ${username} ใช่หรือไม่? ผู้ใช้จะเข้าระบบไม่ได้ทันที แต่ประวัติการทำงานยังอยู่ครบ`,
       confirmLabel: 'ปิดใช้งาน',
       danger: true
     });
@@ -3906,7 +4251,7 @@
 
     try {
       await apiCall('deleteUser', { id }, 'POST');
-      showToast(`ปิดใช้งาน ${email} แล้ว`, 'info');
+      showToast(`ปิดใช้งาน ${username} แล้ว`, 'info');
       renderUsersList(await apiCall('listUsers'));
     } catch (error) {
       showToast(`ทำรายการไม่สำเร็จ: ${error.message}`, 'error');
@@ -4001,12 +4346,10 @@
     try {
       const status = await apiCall('authStatus');
       if (!status.ready) {
-        showToast('เชื่อมต่อเซิร์ฟเวอร์ได้ แต่ยังไม่ได้ตั้งค่า Google Client ID — ใช้เมนู OptiCare › ตั้งค่า Google Client ID ในสเปรดชีต', 'error');
+        showToast('เชื่อมต่อเซิร์ฟเวอร์ได้ แต่ยังไม่มีบัญชีผู้ใช้ — เปิดสเปรดชีตแล้วใช้เมนู OptiCare › สร้างบัญชีผู้ดูแลคนแรก', 'error');
         return;
       }
-      showToast(status.firstRun
-        ? 'เชื่อมต่อสำเร็จ — ยังไม่มีผู้ใช้ในระบบ บัญชี Google แรกที่ล็อกอินจะเป็นเจ้าของร้าน'
-        : `เชื่อมต่อสำเร็จ — มีผู้ใช้ในระบบ ${status.userCount} คน · กดบันทึกเพื่อใช้งาน`);
+      showToast(`เชื่อมต่อสำเร็จ — มีบัญชีที่ใช้งานได้ ${status.accountCount} บัญชี · กดบันทึกเพื่อใช้งาน`);
     } catch (error) {
       state.backend = previous;
       showToast(`เชื่อมต่อไม่สำเร็จ: ${error.message}`, 'error');
@@ -4440,18 +4783,44 @@
       showToast('เข้าสู่โหมดออฟไลน์ — ข้อมูลเก็บในเครื่องนี้เท่านั้น', 'info');
     },
     'open-users': () => openUsersModal(),
+    'change-password': () => openPasswordChange(),
+    'retry-auth': () => initAuth(),
+    'toggle-password': (el) => {
+      const input = document.getElementById(el.dataset.target);
+      if (!input) return;
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      el.setAttribute('aria-pressed', String(show));
+      el.querySelector('i').className = `fa-solid ${show ? 'fa-eye-slash' : 'fa-eye'}`;
+    },
+    'suggest-password': () => {
+      const field = $('#user-password');
+      field.value = suggestPassword();
+      field.type = 'text';
+      const toggle = $('[data-action="toggle-password"][data-target="user-password"]');
+      if (toggle) {
+        toggle.setAttribute('aria-pressed', 'true');
+        toggle.querySelector('i').className = 'fa-solid fa-eye-slash text-xs';
+      }
+      showToast('สุ่มรหัสผ่านแล้ว — คัดลอกไปให้เจ้าตัวก่อนกดบันทึก', 'info');
+    },
     'edit-user': (el) => {
       $('#user-id').value = el.dataset.id;
-      $('#user-email').value = el.dataset.email;
+      $('#user-username').value = el.dataset.username;
+      $('#user-display').value = el.dataset.display || '';
       $('#user-role').value = el.dataset.role;
+      $('#user-email').value = el.dataset.email || '';
       $('#user-note').value = el.dataset.note || '';
-      $('#user-email').focus();
+      $('#user-password').value = '';
+      $('#user-password-label').textContent = '(เว้นว่าง = ไม่เปลี่ยน)';
+      $('#user-username').focus();
     },
-    'disable-user': (el) => disableUser(el.dataset.id, el.dataset.email),
+    'disable-user': (el) => disableUser(el.dataset.id, el.dataset.username),
     'backend-test': () => testBackendConnection(),
     'backend-pull': () => backendPull(),
     'backend-push': () => backendPush(),
     'backend-diagnose': () => backendDiagnose(),
+    'backend-repair': () => backendRepair(),
 
     'new-customer': () => openCustomerModal(),
     'edit-customer': (el) => { switchTab('customers', { keepScroll: true, focusPanel: false }); openCustomerModal(el.dataset.id); },
@@ -4537,6 +4906,8 @@
     });
 
     // ฟอร์มต่าง ๆ
+    els.loginForm.addEventListener('submit', submitLogin);
+    els.changePasswordForm.addEventListener('submit', submitPasswordChange);
     els.userForm.addEventListener('submit', saveUser);
     els.customerForm.addEventListener('submit', saveCustomer);
     els.productForm.addEventListener('submit', saveProduct);
@@ -4627,21 +4998,7 @@
     renderAll();
     renderSession();
 
-    // รอให้สคริปต์ Google Identity Services โหลดเสร็จก่อนค่อยสร้างปุ่มล็อกอิน
-    if (state.backend.mode === 'api' && !window.google) {
-      setLocked(true);
-      showLoginPanel('checking');
-      let waited = 0;
-      const timer = setInterval(() => {
-        waited += 200;
-        if (window.google || waited >= 4000) {
-          clearInterval(timer);
-          initAuth();
-        }
-      }, 200);
-    } else {
-      initAuth();
-    }
+    initAuth();
   }
 
   if (document.readyState === 'loading') {
