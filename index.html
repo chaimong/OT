@@ -76,13 +76,32 @@
              class="w-28 h-28 mx-auto mb-1 drop-shadow-sm" decoding="async">
         <h1 id="login-title" class="text-2xl font-bold text-gray-900">ดูดีการแว่น</h1>
         <p class="text-xs font-medium text-blue-700 tracking-wide">ระบบบริหารจัดการร้านแว่นตา · OptiCare Pro</p>
-        <p class="text-sm text-gray-500 pt-1">เข้าสู่ระบบด้วยบัญชี Google ของพนักงาน</p>
+        <p id="login-subtitle" class="text-sm text-gray-500 pt-1">กำลังเตรียมระบบ…</p>
       </div>
 
       <!-- ปุ่มล็อกอิน Google (สร้างโดย Google Identity Services) -->
       <div id="login-google" class="hidden space-y-3">
         <div id="google-signin-button" class="flex justify-center min-h-[44px]"></div>
         <p id="login-error" role="alert" class="hidden text-rose-600 text-xs font-medium bg-rose-50 border border-rose-200 rounded-lg p-3 leading-relaxed"></p>
+      </div>
+
+      <!-- โหมดเปิด — เข้าใช้งานโดยไม่ต้องมีบัญชี Google -->
+      <div id="login-open" class="hidden">
+        <form id="login-open-form" class="space-y-3" novalidate>
+          <div id="access-code-field" class="hidden">
+            <label for="access-code" class="block text-xs font-semibold text-gray-700 mb-1">รหัสเข้าใช้งานของร้าน</label>
+            <input type="password" id="access-code" autocomplete="current-password" inputmode="text"
+                   class="w-full px-3 py-2.5 rounded-xl border border-gray-300 text-center tracking-widest focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
+                   placeholder="••••••••" aria-describedby="access-code-hint">
+            <p id="access-code-hint" class="text-2xs text-gray-400 mt-1">เจ้าของร้านตั้งรหัสนี้ไว้ในสเปรดชีต</p>
+          </div>
+          <button type="submit"
+                  class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow-md transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
+            <span>เข้าสู่ระบบ</span>
+          </button>
+          <p id="login-open-error" role="alert" class="hidden text-rose-600 text-xs font-medium bg-rose-50 border border-rose-200 rounded-lg p-3 leading-relaxed"></p>
+        </form>
       </div>
 
       <!-- ระหว่างตรวจสอบสถานะเซิร์ฟเวอร์ -->
@@ -109,9 +128,8 @@
       </div>
 
       <div class="text-center border-t border-gray-100 pt-4">
-        <p class="text-2xs text-gray-400 leading-snug">
-          เข้าสู่ระบบด้วยบัญชี Google ที่ได้รับสิทธิ์เท่านั้น
-          การตรวจสอบสิทธิ์ทั้งหมดทำที่ฝั่งเซิร์ฟเวอร์ตามบทบาทที่กำหนดไว้ในตาราง Users
+        <p id="login-footnote" class="text-2xs text-gray-400 leading-snug">
+          การตรวจสอบสิทธิ์ทั้งหมดทำที่ฝั่งเซิร์ฟเวอร์เสมอ
         </p>
       </div>
     </div>
@@ -388,6 +406,11 @@
                         class="w-full py-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-semibold rounded-lg text-xs transition flex items-center justify-center space-x-1.5 shadow-sm">
                   <i class="fa-solid fa-stethoscope" aria-hidden="true"></i>
                   <span>ตรวจสุขภาพฐานข้อมูล</span>
+                </button>
+                <button type="button" data-action="backend-repair" id="btn-backend-repair"
+                        class="w-full py-2 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed font-semibold rounded-lg text-xs transition flex items-center justify-center space-x-1.5 shadow-sm">
+                  <i class="fa-solid fa-screwdriver-wrench" id="backend-repair-icon" aria-hidden="true"></i>
+                  <span>ซ่อมบำรุงฐานข้อมูล</span>
                 </button>
               </div>
 
@@ -1767,20 +1790,25 @@
       <div class="mb-4 pr-8">
         <h2 class="text-xl font-bold text-gray-900 flex items-center gap-2" id="sync-report-title">
           <i class="fa-solid fa-clipboard-check text-blue-600" aria-hidden="true"></i>
-          รายงานการเชื่อมต่อ Google Sheets
+          <span id="sync-report-title-text">รายงานการเชื่อมต่อ Google Sheets</span>
         </h2>
-        <p class="text-xs text-gray-500 mt-1">
+        <p id="sync-report-subtitle" class="text-xs text-gray-500 mt-1">
           ตรวจว่าดึงข้อมูลได้จริง คอลัมน์จับคู่ถูกต้องหรือไม่ และข้อมูลในชีตมีจุดใดต้องแก้ก่อนนำเข้า
         </p>
       </div>
 
       <div id="sync-report-body" class="space-y-4"></div>
 
-      <div class="flex justify-end gap-3 pt-4 mt-4 border-t border-gray-100">
+      <div class="flex flex-col sm:flex-row justify-end gap-3 pt-4 mt-4 border-t border-gray-100">
         <button type="button" data-action="close-modal"
                 class="px-4 py-2 border rounded-lg text-gray-600 hover:bg-gray-50 text-sm">ปิด</button>
+        <button type="button" data-action="backend-repair"
+                class="px-4 py-2 bg-amber-100 text-amber-900 hover:bg-amber-200 font-medium rounded-lg text-sm flex items-center justify-center gap-2">
+          <i class="fa-solid fa-screwdriver-wrench" aria-hidden="true"></i>
+          ซ่อมบำรุงฐานข้อมูล
+        </button>
         <button type="button" data-action="sync-report"
-                class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg shadow text-sm flex items-center gap-2">
+                class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg shadow text-sm flex items-center justify-center gap-2">
           <i class="fa-solid fa-rotate" aria-hidden="true"></i>
           ตรวจสอบอีกครั้ง
         </button>
